@@ -35,7 +35,11 @@ const NMMetaSettingInfoEditor *const*nm_meta_setting_infos_editor_p (void);
 
 const char *nm_meta_abstract_info_get_name (const NMMetaAbstractInfo *abstract_info, gboolean for_header);
 
+gboolean nm_meta_abstract_info_included_in_common (const NMMetaAbstractInfo *abstract_info,
+                                                   int *out_order);
+
 const NMMetaAbstractInfo *const*nm_meta_abstract_info_get_nested (const NMMetaAbstractInfo *abstract_info,
+                                                                  gboolean include_all,
                                                                   guint *out_len,
                                                                   gpointer *nested_to_free);
 
@@ -60,7 +64,9 @@ const char *const*nm_meta_abstract_info_complete (const NMMetaAbstractInfo *abst
 
 /*****************************************************************************/
 
-char *nm_meta_abstract_info_get_nested_names_str (const NMMetaAbstractInfo *abstract_info, const char *name_prefix);
+char *nm_meta_abstract_info_get_nested_names_str (const NMMetaAbstractInfo *abstract_info,
+                                                  gboolean include_all,
+                                                  const char *name_prefix);
 char *nm_meta_abstract_infos_get_names_str (const NMMetaAbstractInfo *const*fields_array, const char *name_prefix);
 
 /*****************************************************************************/

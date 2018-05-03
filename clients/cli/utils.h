@@ -253,6 +253,31 @@ struct _NmcMetaGenericInfo {
 	gpointer *out_to_free
 
 	gconstpointer (*get_fcn) (NMC_META_GENERIC_INFO_GET_FCN_ARGS);
+
+	/* @common_priority is used for implementing nm_meta_abstract_info_included_in_common().
+	 *
+	 * Included-in-common returns two separate values:
+	 *   - whether the property is included when requesting only common fields ("common" vs. "all")
+	 *   - the sort order, in which the fields are to be sorted in the common
+	 *     case (note, that the sort order only matters when requesting "common" fields,
+	 *     because for requesting "all" fields, the order is implicitly determined by
+	 *     what nm_meta_abstract_info_get_nested() returns.
+	 *
+	 * Hence, to declare a field that is returned during "all" request,
+	 * but not for a "common" request, set @common_priority to -1.
+	 *
+	 * To configure a field that is returned both for "all" and "common"
+	 * requests, set @common_priority to a non-negative integer.
+	 * Optionally, you may use the positive integer range to sort the
+	 * values according their priority (when requesting "common" fields).
+	 *
+	 * So, by default, don't do anything. In this case, @common_priority
+	 * will be zero which means to return it both for "common" and "all"
+	 * request, and also all fields may have the same priority of zero,
+	 * so the sort order for "common" is identical to "all" (since
+	 * all have the same priority and we use a stable sort).
+	 */
+	int common_priority;
 };
 
 #define NMC_META_GENERIC(n, ...) \

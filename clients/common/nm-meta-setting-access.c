@@ -191,8 +191,156 @@ nm_meta_abstract_info_get_name (const NMMetaAbstractInfo *abstract_info, gboolea
 	return n;
 }
 
+gboolean
+nm_meta_abstract_info_included_in_common (const NMMetaAbstractInfo *abstract_info,
+                                          int *out_order)
+{
+	int order = 0;
+	gboolean res;
+
+	nm_assert (abstract_info);
+	nm_assert (abstract_info->meta_type);
+
+	if (!abstract_info->meta_type->included_in_common) {
+		NM_SET_OUT (out_order, 0);
+		return TRUE;
+	}
+
+	res = abstract_info->meta_type->included_in_common (abstract_info, &order);
+
+	/* For values that are not included in "common", their order is ignored
+	 * because for the "all" request we don't specially sort the fields.
+	 *
+	 * For infos that are included in "common" fields, their order matters.
+	 * Enforce that the callee sets a non-negative sort order. */
+	nm_assert (   (!res && order == 0)
+	           || ( res && order >= 0));
+	NM_SET_OUT (out_order, order);
+	return res;
+}
+
+typedef struct {
+	const NMMetaAbstractInfo *info;
+	int order;
+} SelectIncludedInCommonData;
+
+static int
+_select_included_in_common_cmp (gconstpointer pa, gconstpointer pb, gpointer user_data)
+{
+	const SelectIncludedInCommonData *a = pa;
+	const SelectIncludedInCommonData *b = pb;
+
+	NM_CMP_DIRECT (a->order, b->order);
+	return 0;
+}
+
+static const NMMetaAbstractInfo *const*
+nm_meta_abstract_infos_select_included_in_common (const NMMetaAbstractInfo *const*abstract_infos,
+                                                  gssize in_len,
+                                                  guint *out_len,
+                                                  gpointer *out_to_free)
+{
+	guint l = 0;
+	gs_free gpointer f = NULL;
+	gs_free SelectIncludedInCommonData *infos_common = NULL;
+	guint i, j;
+
+	if (in_len < 0)
+		l = NM_PTRARRAY_LEN (abstract_infos);
+	else {
+		nm_assert (in_len < G_MAXUINT);
+		l = in_len;
+	}
+
+	if (l == 0) {
+		NM_SET_OUT (out_len, 0);
+		*out_to_free = NULL;
+		return NULL;
+	}
+
+	j = 0;
+	for (i = 0; i < l; i++) {
+		int order;
+		gboolean included_in_common;
+
+		included_in_common = nm_meta_abstract_info_included_in_common (abstract_infos[i], &order);
+
+		if (   !infos_common
+		    && included_in_common
+		    && order == 0) {
+			/* it's included and we didn't get find a value that is not included.
+			 * Maybe we don't need to allocate an auxilary buffer after all... */
+			j++;
+			continue;
+		}
+
+		if (!infos_common) {
+			/* OK, we need to clone (and sort) the list. First, copy the existing
+			 * items. */
+			infos_common = g_new (SelectIncludedInCommonData, l);
+			for (j = 0; j < i; j++) {
+				infos_common[j].info = abstract_infos[j];
+				infos_common[j].order = 0;
+			}
+		}
+
+		if (included_in_common) {
+			infos_common[j].info = abstract_infos[i];
+			infos_common[j].order = order;
+			j++;
+		}
+	}
+
+	if (j == 0) {
+		NM_SET_OUT (out_len, 0);
+		*out_to_free = NULL;
+		return NULL;
+	}
+
+	if (infos_common) {
+		const NMMetaAbstractInfo **result;
+
+		if (j > 1) {
+			g_qsort_with_data (infos_common,
+			                   j,
+			                   sizeof (SelectIncludedInCommonData),
+			                   _select_included_in_common_cmp,
+			                   NULL);
+		}
+
+#if NM_MORE_ASSERTS
+		/* there are two options: either the type information does not
+		 * define any order (meaning, all order numbers are zero, and the "common" order
+		 * is identical to "all".
+		 * Or, the implementation sets them all to unique, positive numbers.
+		 *
+		 * Assert for that. */
+		for (i = 1; i < j; i++) {
+			if (infos_common[0].order == 0)
+				nm_assert (infos_common[i].order == 0);
+			else
+				nm_assert (infos_common[i - 1].order < infos_common[i].order);
+		}
+#endif
+
+		result = g_new (const NMMetaAbstractInfo *, j + 1);
+		for (i = 0; i < j; i++)
+			result[i] = infos_common[i].info;
+		result[i] = NULL;
+
+		NM_SET_OUT (out_len, j);
+		*out_to_free = result;
+		return result;
+	}
+
+	NM_SET_OUT (out_len, l);
+	*out_to_free = NULL;
+	return abstract_infos;
+}
+
 const NMMetaAbstractInfo *const*
 nm_meta_abstract_info_get_nested (const NMMetaAbstractInfo *abstract_info,
+                                  gboolean include_all /* or only those included_in_common */,
                                   guint *out_len,
                                   gpointer *nested_to_free)
 {
@@ -204,16 +352,44 @@ nm_meta_abstract_info_get_nested (const NMMetaAbstractInfo *abstract_info,
 	nm_assert (abstract_info->meta_type);
 	nm_assert (nested_to_free && !*nested_to_free);
 
-	if (abstract_info->meta_type->get_nested) {
-		nested = abstract_info->meta_type->get_nested (abstract_info, &l, &f);
-		nm_assert (NM_PTRARRAY_LEN (nested) == l);
-		nm_assert (!f || nested == f);
-		if (nested && nested[0]) {
-			NM_SET_OUT (out_len, l);
-			*nested_to_free = g_steal_pointer (&f);
-			return nested;
+	if (!abstract_info->meta_type->get_nested)
+		goto out_empty;
+
+	nested = abstract_info->meta_type->get_nested (abstract_info, &l, &f);
+	nm_assert (NM_PTRARRAY_LEN (nested) == l);
+	nm_assert (!f || nested == f);
+	if (l == 0)
+		goto out_empty;
+
+	if (!include_all) {
+		const NMMetaAbstractInfo *const*nested_common;
+		gpointer f2 = NULL;
+
+		nested_common = nm_meta_abstract_infos_select_included_in_common (nested, l, &l, &f2);
+		nm_assert (NM_PTRARRAY_LEN (nested_common) == l);
+
+		if (l == 0) {
+			nm_assert (!f2);
+			nm_assert (!nested_common);
+			goto out_empty;
+		}
+
+		nm_assert (nested_common);
+		if (nested_common == f2) {
+			g_free (f);
+			f = g_steal_pointer (&f2);
+			nested = nested_common;
+		} else {
+			nm_assert (!f2);
+			nm_assert (nested_common == nested);
 		}
 	}
+
+	NM_SET_OUT (out_len, l);
+	*nested_to_free = g_steal_pointer (&f);
+	return nested;
+
+out_empty:
 	NM_SET_OUT (out_len, 0);
 	return NULL;
 }
@@ -346,12 +522,14 @@ nm_meta_abstract_info_complete (const NMMetaAbstractInfo *abstract_info,
 /*****************************************************************************/
 
 char *
-nm_meta_abstract_info_get_nested_names_str (const NMMetaAbstractInfo *abstract_info, const char *name_prefix)
+nm_meta_abstract_info_get_nested_names_str (const NMMetaAbstractInfo *abstract_info,
+                                            gboolean include_all /* or only those included_in_common */,
+                                            const char *name_prefix)
 {
 	gs_free gpointer nested_to_free = NULL;
 	const NMMetaAbstractInfo *const*nested;
 
-	nested = nm_meta_abstract_info_get_nested (abstract_info, NULL, &nested_to_free);
+	nested = nm_meta_abstract_info_get_nested (abstract_info, include_all, NULL, &nested_to_free);
 	if (!nested)
 		return NULL;
 
@@ -474,7 +652,7 @@ _output_selection_select_one (const NMMetaAbstractInfo *const* fields_array,
 			break;
 		}
 
-		nested = nm_meta_abstract_info_get_nested (fi, NULL, &nested_to_free);
+		nested = nm_meta_abstract_info_get_nested (fi, TRUE, NULL, &nested_to_free);
 		if (nested) {
 			for (j = 0; nested[j]; nested++) {
 				if (g_ascii_strcasecmp (right, nm_meta_abstract_info_get_name (nested[j], FALSE)) == 0) {
@@ -504,7 +682,7 @@ not_found:
 					p = g_strdup_printf ("%s.%s", fields_prefix,
 					                     nm_meta_abstract_info_get_name (fields_array_failure, FALSE));
 				}
-				allowed_fields = nm_meta_abstract_info_get_nested_names_str (fields_array_failure, p);
+				allowed_fields = nm_meta_abstract_info_get_nested_names_str (fields_array_failure, TRUE, p);
 			} else
 				allowed_fields = nm_meta_abstract_infos_get_names_str (fields_array, NULL);
 
