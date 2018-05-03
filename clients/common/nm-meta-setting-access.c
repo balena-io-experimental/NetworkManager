@@ -783,8 +783,14 @@ nm_meta_selection_create_parse_list (const NMMetaAbstractInfo *const* fields_arr
 
 	g_return_val_if_fail (!error || !*error, NULL);
 
-	if (!fields_str)
+	if (!fields_str || !g_ascii_strcasecmp (fields_str, "all"))
 		return nm_meta_selection_create_all (fields_array);
+	else if (!g_ascii_strcasecmp (fields_str, "common")) {
+		gs_free gpointer f = NULL;
+
+		fields_array = nm_meta_abstract_infos_select_included_in_common (fields_array, -1, NULL, &f);
+		return nm_meta_selection_create_all (fields_array);
+	}
 
 	fields_str_clone = g_strdup (fields_str);
 	for (fields_str_cur = fields_str_clone; fields_str_cur; fields_str_cur = fields_str_next) {
