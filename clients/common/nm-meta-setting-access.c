@@ -771,6 +771,7 @@ nm_meta_selection_create_parse_one (const NMMetaAbstractInfo *const* fields_arra
 
 NMMetaSelectionResultList *
 nm_meta_selection_create_parse_list (const NMMetaAbstractInfo *const* fields_array,
+                                     const char *fields_prefix,
                                      const char *fields_str, /* a comma separated list of selectors */
                                      gboolean validate_nested,
                                      GError **error)
@@ -778,33 +779,52 @@ nm_meta_selection_create_parse_list (const NMMetaAbstractInfo *const* fields_arr
 	gs_unref_array GArray *array = NULL;
 	nm_auto_free_gstring GString *str = NULL;
 	gs_free char *fields_str_clone = NULL;
-	char *fields_str_cur;
-	char *fields_str_next;
+	guint i, j;
+	gs_free const char **fields_words_split = NULL;
+	gs_strfreev char **fields_words_prefixed = NULL;
+	guint fields_len = 0;
+	const char **fields_words = NULL;
 
 	g_return_val_if_fail (!error || !*error, NULL);
 
-	if (!fields_str || !g_ascii_strcasecmp (fields_str, "all"))
+	fields_words_split = nm_utils_strsplit_set (fields_str ?: "all", ",");
+	if (fields_words_split) {
+		for (i = 0, j = 0; fields_words_split[i]; i++) {
+			/* it's safe to strip the words in-place, because of how
+			 * nm_utils_strsplit_set() works. */
+			g_strstrip ((char *) fields_words_split[i]);
+			if (fields_words_split[i][0])
+				fields_words_split[j++] = fields_words_split[i];
+		}
+		fields_words_split[j] = NULL;
+		fields_words = fields_words_split;
+		fields_len = j;
+	}
+
+	if (   fields_len == 0
+	    || (   fields_len == 1
+	        && !g_ascii_strcasecmp (fields_words[0], "all")))
 		return nm_meta_selection_create_all (fields_array);
-	else if (!g_ascii_strcasecmp (fields_str, "common")) {
+	else if (   fields_len == 1
+	         && !g_ascii_strcasecmp (fields_words[0], "common")) {
 		gs_free gpointer f = NULL;
 
 		fields_array = nm_meta_abstract_infos_select_included_in_common (fields_array, -1, NULL, &f);
 		return nm_meta_selection_create_all (fields_array);
 	}
 
-	fields_str_clone = g_strdup (fields_str);
-	for (fields_str_cur = fields_str_clone; fields_str_cur; fields_str_cur = fields_str_next) {
-		fields_str_cur = nm_str_skip_leading_spaces (fields_str_cur);
-		fields_str_next = strchr (fields_str_cur, ',');
-		if (fields_str_next)
-			*fields_str_next++ = '\0';
+	if (fields_prefix) {
+		fields_words_prefixed = g_new (char *, i + 1);
+		for (i = 0; fields_words_split[i]; i++)
+			fields_words_prefixed[i] = g_strconcat (fields_prefix, ".", fields_words_split[i], NULL);
+		fields_words_prefixed[i] = NULL;
+		fields_words = (const char **) fields_words_prefixed;
+	}
 
-		g_strchomp (fields_str_cur);
-		if (!fields_str_cur[0])
-			continue;
+	for (i = 0; i < fields_len; i++) {
 		if (!_output_selection_select_one (fields_array,
 		                                   NULL,
-		                                   fields_str_cur,
+		                                   fields_words[i],
 		                                   validate_nested,
 		                                   &array,
 		                                   &str,

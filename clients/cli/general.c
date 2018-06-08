@@ -482,6 +482,7 @@ show_nm_status (NmCli *nmc, const char *pretty_header_name, const char *print_fl
 	                NULL,
 	                pretty_header_name ?: N_("NetworkManager status"),
 	                (const NMMetaAbstractInfo *const*) metagen_general_status,
+	                NULL,
 	                fields_str,
 	                &error)) {
 		g_string_printf (nmc->return_text, _("Error: only these fields are allowed: %s"), fields_all);
@@ -563,6 +564,7 @@ print_permissions (void *user_data)
 	                NULL,
 	                _("NetworkManager permissions"),
 	                (const NMMetaAbstractInfo *const*) metagen_general_permissions,
+	                NULL,
 	                fields_str,
 	                &error)) {
 		g_string_printf (nmc->return_text, _("Error: 'general permissions': %s"), error->message);
@@ -707,6 +709,7 @@ show_general_logging (NmCli *nmc)
 	                NULL,
 	                _("NetworkManager logging"),
 	                (const NMMetaAbstractInfo *const*) metagen_general_logging,
+	                NULL,
 	                fields_str,
 	                &error)) {
 		g_string_printf (nmc->return_text, _("Error: 'general logging': %s"), error->message);

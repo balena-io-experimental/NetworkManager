@@ -1486,17 +1486,13 @@ nmc_active_connection_details (NMActiveConnection *acon, NmCli *nmc)
 		was_output = FALSE;
 
 		if (nmc_fields_con_active_details_groups[group_idx]->nested == metagen_con_active_general) {
-			gs_free char *f = NULL;
-
-			if (group_fld)
-				f = g_strdup_printf ("GENERAL.%s", group_fld);
-
 			nmc_print (&nmc->nmc_config,
 			           (gpointer[]) { acon, NULL },
 			           NULL,
 			           NULL,
 			           NMC_META_GENERIC_GROUP ("GENERAL", metagen_con_active_general, N_("GROUP")),
-			           f,
+			           "GENERAL",
+			           group_fld,
 			           NULL);
 			was_output = TRUE;
 			continue;
@@ -1545,6 +1541,7 @@ nmc_active_connection_details (NMActiveConnection *acon, NmCli *nmc)
 				           NULL,
 				           NULL,
 				           NMC_META_GENERIC_GROUP ("VPN", metagen_con_active_vpn, N_("NAME")),
+				           NULL,
 				           group_fld,
 				           NULL);
 				was_output = TRUE;
@@ -2071,6 +2068,7 @@ do_connections_show (NmCli *nmc, int argc, char **argv)
 		 * a profile has multiple active connections, it will be listed multiple times.
 		 * If that's not the case, we filter out these duplicate lines. */
 		selection = nm_meta_selection_create_parse_list ((const NMMetaAbstractInfo *const*) metagen_con_show,
+		                                                 NULL,
 		                                                 fields_str,
 		                                                 FALSE,
 		                                                 NULL);
@@ -2099,6 +2097,7 @@ do_connections_show (NmCli *nmc, int argc, char **argv)
 		                  ? _("NetworkManager active profiles")
 		                  : _("NetworkManager connection profiles"),
 		                (const NMMetaAbstractInfo *const*) metagen_con_show,
+		                NULL,
 		                fields_str,
 		                &err))
 			goto finish;

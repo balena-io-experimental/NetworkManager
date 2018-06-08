@@ -383,6 +383,7 @@ gboolean nmc_print (const NmcConfig *nmc_config,
                     gpointer targets_data,
                     const char *header_name_no_l10n,
                     const NMMetaAbstractInfo *const*fields,
+                    const char *fields_prefix,
                     const char *fields_str,
                     GError **error);
 

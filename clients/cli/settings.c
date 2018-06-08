@@ -683,7 +683,6 @@ setting_details (const NmcConfig *nmc_config, NMSetting *setting, const char *on
 {
 	const NMMetaSettingInfoEditor *setting_info;
 	gs_free_error GError *error = NULL;
-	gs_free char *fields_str = NULL;
 
 	g_return_val_if_fail (NM_IS_SETTING (setting), FALSE);
 
@@ -691,19 +690,13 @@ setting_details (const NmcConfig *nmc_config, NMSetting *setting, const char *on
 	if (!setting_info)
 		return FALSE;
 
-	if (one_prop) {
-		/* hack around setting-details being called for one setting. Must prefix the
-		 * property name with the setting name. Later we should remove setting_details()
-		 * and merge it into the caller. */
-		fields_str = g_strdup_printf ("%s.%s", nm_setting_get_name (setting), one_prop);
-	}
-
 	if (!nmc_print (nmc_config,
 	                (gpointer[]) { setting, NULL },
 	                NULL,
 	                NULL,
 	                (const NMMetaAbstractInfo *const[]) { (const NMMetaAbstractInfo *) setting_info, NULL },
-	                fields_str,
+	                nm_setting_get_name (setting),
+	                one_prop,
 	                &error))
 		return FALSE;
 
