@@ -254,6 +254,21 @@ struct _NmcMetaGenericInfo {
 
 	gconstpointer (*get_fcn) (NMC_META_GENERIC_INFO_GET_FCN_ARGS);
 
+	/* Some types behave rather different when being printed by nmc_print().
+	 * How exactly? Well... it's complicated. *sigh*
+	 *
+	 * For `nmcli -f ALL device show wlan0`, we print informations about the
+	 * access point like
+	 *
+	 *     AP[1].SSID:      home
+	 *
+	 * Note how the header is not static, but also contains an index.
+	 *
+	 * Such groups will be marked as with_indexed_header, and cause nmc_print()
+	 * to generate headers with an index.
+	 */
+	bool with_indexed_header:1;
+
 	/* @common_priority is used for implementing nm_meta_abstract_info_included_in_common().
 	 *
 	 * Included-in-common returns two separate values:
@@ -290,9 +305,12 @@ struct _NmcMetaGenericInfo {
 #define NMC_META_GENERIC_WITH_NESTED(n, nest, ...) \
 	NMC_META_GENERIC (n, .nested = (nest), __VA_ARGS__)
 
-#define NMC_META_GENERIC_GROUP(_group_name, _nested, _name_header) \
+#define NMC_META_GENERIC_GROUP(_group_name, _nested, _name_header, ...) \
 	((const NMMetaAbstractInfo *const*) ((const NmcMetaGenericInfo *const[]) { \
-		NMC_META_GENERIC_WITH_NESTED (_group_name,_nested, .name_header = _name_header), \
+		NMC_META_GENERIC_WITH_NESTED (_group_name, \
+		                              _nested, \
+		                              .name_header = _name_header, \
+		                              ##__VA_ARGS__), \
 		NULL, \
 	}))
 

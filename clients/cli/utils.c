@@ -62,6 +62,10 @@ _meta_type_nmc_generic_info_get_nested (const NMMetaAbstractInfo *abstract_info,
 
 	info = (const NmcMetaGenericInfo *) abstract_info;
 
+	/* don't accept setting an empty array. This hints to a bug. Did you set
+	 * the NmcGenericInfoType enum right? */
+	nm_assert (!info->nested || info->nested[0]);
+
 	NM_SET_OUT (out_len, NM_PTRARRAY_LEN (info->nested));
 	return (const NMMetaAbstractInfo *const*) info->nested;
 }
@@ -925,17 +929,41 @@ nmc_empty_output_fields (NmcOutputData *output_data)
 
 /*****************************************************************************/
 
+static gboolean
+_meta_abstract_info_with_indexed_header (const NMMetaAbstractInfo *info)
+{
+	nm_assert (info);
+
+	return    info->meta_type == &nmc_meta_type_generic_info
+	       && ((const NmcMetaGenericInfo *) info)->with_indexed_header;
+}
+
+static gboolean
+_print_data_col_with_indexed_header (const PrintDataCol *col)
+{
+	nm_assert (col);
+
+	/** a @col instance is considered to have an indexed-header, if the abstract-info
+	 * that the col instance referens to is marked as such.
+	 * ... or *any* of it's parents. */
+	do {
+		if (_meta_abstract_info_with_indexed_header (col->selection_item->info))
+			return TRUE;
+		col = col->parent_col;
+	} while (col);
+	return FALSE;
+}
+
 typedef struct {
-	guint col_idx;
 	const PrintDataCol *col;
-	const char *title;
-	bool title_to_free:1;
+	const char *title_parent;
+	const char *title_self;
+	guint col_idx;
+	int width;
 
 	/* whether the column should be printed. If not %TRUE,
 	 * the column will be skipped. */
 	bool to_print:1;
-
-	int width;
 } PrintDataHeaderCell;
 
 typedef enum {
@@ -955,16 +983,45 @@ typedef struct {
 	bool text_to_free:1;
 } PrintDataCell;
 
+static const char *
+_print_data_header_get_title (const PrintDataHeaderCell *header_cell, gssize row_idx, char **out_to_free)
+{
+	nm_assert (header_cell);
+	nm_assert (header_cell->col);
+	nm_assert (header_cell->title_self);
+	nm_assert (out_to_free && !*out_to_free);
+
+	if (!header_cell->title_parent)
+		return header_cell->title_self;
+
+	nm_assert (header_cell->col->parent_col);
+
+	if (   row_idx >= 0
+	    && _print_data_col_with_indexed_header (header_cell->col)) {
+		return (*out_to_free = g_strdup_printf ("%s[%lu].%s",
+		                                        header_cell->title_parent,
+		                                        (unsigned long) (row_idx + 1),
+		                                        header_cell->title_self));
+	}
+	return (*out_to_free = g_strconcat (header_cell->title_parent, ".", header_cell->title_self, NULL));
+}
+
+static guint
+_print_data_header_get_title_width (const PrintDataHeaderCell *header_cell, gssize row_idx)
+{
+	gs_free char *s = NULL;
+
+	return nmc_string_screen_width (_print_data_header_get_title (header_cell, row_idx, &s),
+	                                NULL);
+}
+
 static void
 _print_data_header_cell_clear (gpointer cell_p)
 {
 	PrintDataHeaderCell *cell = cell_p;
 
-	if (cell->title_to_free) {
-		g_free ((char *) cell->title);
-		cell->title_to_free = FALSE;
-	}
-	cell->title = NULL;
+	cell->title_parent = NULL;
+	cell->title_self = NULL;
 }
 
 static void
@@ -1010,7 +1067,6 @@ _print_fill (const NmcConfig *nmc_config,
 	NMMetaAccessorGetType text_get_type;
 	NMMetaAccessorGetFlags text_get_flags;
 
-
 	header_row = g_array_sized_new (FALSE, TRUE, sizeof (PrintDataHeaderCell), cols_len);
 	g_array_set_clear_func (header_row, _print_data_header_cell_clear);
 
@@ -1038,17 +1094,14 @@ _print_fill (const NmcConfig *nmc_config,
 		 * unless we have a cell (below) which opts-in to be printed. */
 		header_cell->to_print = FALSE;
 
-		header_cell->title = nm_meta_abstract_info_get_name (info, TRUE);
+		header_cell->title_parent = NULL;
+		header_cell->title_self = nm_meta_abstract_info_get_name (info, TRUE);
 		if (   nmc_config->multiline_output
 		    && col->parent_col
 		    && NM_IN_SET (info->meta_type,
 		                  &nm_meta_type_property_info,
-		                  &nmc_meta_type_generic_info)) {
-			header_cell->title = g_strdup_printf ("%s.%s",
-			                                      nm_meta_abstract_info_get_name (col->parent_col->selection_item->info, FALSE),
-			                                      header_cell->title);
-			header_cell->title_to_free = TRUE;
-		}
+		                  &nmc_meta_type_generic_info))
+			header_cell->title_parent = nm_meta_abstract_info_get_name (col->parent_col->selection_item->info, FALSE);
 	}
 
 	targets_len = NM_PTRARRAY_LEN (targets);
@@ -1147,13 +1200,31 @@ _print_fill (const NmcConfig *nmc_config,
 					cell->text.plain = "";
 				nm_assert (cell->text_format == PRINT_DATA_CELL_FORMAT_TYPE_PLAIN);
 			}
+
+			if (   !nmc_config->multiline_output
+			    && info->meta_type == &nmc_meta_type_generic_info
+			    && ((const NmcMetaGenericInfo *) info)->nested
+			    && _print_data_col_with_indexed_header (header_cell->col)
+			    && cell->text_format == PRINT_DATA_CELL_FORMAT_TYPE_PLAIN) {
+				char *s;
+
+				/* this cell is the name (e.g. NAME=AP). We need to add an index
+				 * to the header name in multiline mode. */
+				s = g_strdup_printf ("%s[%lu]",
+				                     cell->text.plain,
+				                     (unsigned long) (i_row + 1));
+				_print_data_cell_clear_text (cell);
+				nm_assert (cell->text_format == PRINT_DATA_CELL_FORMAT_TYPE_PLAIN);
+				cell->text.plain = s;
+				cell->text_to_free = TRUE;
+			}
 		}
 	}
 
 	for (i_col = 0; i_col < header_row->len; i_col++) {
 		PrintDataHeaderCell *header_cell = &g_array_index (header_row, PrintDataHeaderCell, i_col);
 
-		header_cell->width = nmc_string_screen_width (header_cell->title, NULL);
+		header_cell->width = _print_data_header_get_title_width (header_cell, ((gssize) targets_len) - 1);
 
 		for (i_row = 0; i_row < targets_len; i_row++) {
 			const PrintDataCell *cell = &g_array_index (cells, PrintDataCell, i_row * cols_len + i_col);
@@ -1268,11 +1339,12 @@ _print_do (const NmcConfig *nmc_config,
 		for (i_col = 0; i_col < col_len; i_col++) {
 			const PrintDataHeaderCell *header_cell = &header_row[i_col];
 			const char *title;
+			gs_free char *title_free = NULL;
 
 			if (_print_skip_column (nmc_config, header_cell))
 				continue;
 
-			title = header_cell->title;
+			title = _print_data_header_get_title (header_cell, -1, &title_free);
 
 			width1 = strlen (title);
 			width2 = nmc_string_screen_width (title, NULL);  /* Width of the string (in screen columns) */
@@ -1323,19 +1395,24 @@ _print_do (const NmcConfig *nmc_config,
 				const char *text;
 
 				text = colorize_string (nmc_config, cell->color, lines[i_lines], &text_to_free);
+
 				if (nmc_config->multiline_output) {
 					gs_free char *prefix = NULL;
+					gs_free char *title_free = NULL;
+					const char *title;
+
+					title = _print_data_header_get_title (cell->header_cell, i_row, &title_free);
 
 					if (cell->text_format == PRINT_DATA_CELL_FORMAT_TYPE_STRV)
-						prefix = g_strdup_printf ("%s[%u]:", cell->header_cell->title, i_lines + 1);
+						prefix = g_strdup_printf ("%s[%u]:", title, i_lines + 1);
 					else
-						prefix = g_strdup_printf ("%s:", cell->header_cell->title);
+						prefix = g_strdup_printf ("%s:", title);
 					width1 = strlen (prefix);
 					width2 = nmc_string_screen_width (prefix, NULL);
 					g_print ("%-*s%s\n",
 					         (int) (  nmc_config->print_output == NMC_PRINT_TERSE
 					               ? 0
-					               : ML_VALUE_INDENT+width1-width2),
+					               : ML_VALUE_INDENT + width1 - width2),
 					         prefix,
 					         text);
 				} else {
