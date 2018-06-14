@@ -570,9 +570,10 @@ typedef struct {
 } OutputSelectionItem;
 
 static NMMetaSelectionResultList *
-_output_selection_pack (const NMMetaAbstractInfo *const* fields_array,
+_output_selection_pack (const NMMetaAbstractInfo *const*fields_array,
                         GArray *array,
-                        GString *str)
+                        GString *str,
+                        NMMetaSelectionType selection_type)
 {
 	NMMetaSelectionResultList *result;
 	guint i;
@@ -596,10 +597,18 @@ _output_selection_pack (const NMMetaAbstractInfo *const* fields_array,
 
 			p->info = fields_array[a->idx];
 			p->idx = a->idx;
-			if (a->self_offset_plus_1 > 0)
+			p->selection_type = selection_type;
+			if (NM_IN_SET (selection_type, NM_META_SELECTION_TYPE_COMMON,
+			                               NM_META_SELECTION_TYPE_ALL)) {
+				nm_assert (a->self_offset_plus_1 == 0);
+				nm_assert (a->sub_offset_plus_1 == 0);
+			} else {
+				nm_assert (selection_type == NM_META_SELECTION_TYPE_SUB_FIELD);
+				nm_assert (a->self_offset_plus_1 > 0);
 				p->self_selection = &pdata[a->self_offset_plus_1 - 1];
-			if (a->sub_offset_plus_1 > 0)
-				p->sub_selection = &pdata[a->sub_offset_plus_1 - 1];
+				if (a->sub_offset_plus_1 > 0)
+					p->sub_selection = &pdata[a->sub_offset_plus_1 - 1];
+			}
 		}
 	}
 
@@ -607,7 +616,7 @@ _output_selection_pack (const NMMetaAbstractInfo *const* fields_array,
 }
 
 static gboolean
-_output_selection_select_one (const NMMetaAbstractInfo *const* fields_array,
+_output_selection_select_one (const NMMetaAbstractInfo *const*fields_array,
                               const char *fields_prefix,
                               const char *fields_str,
                               gboolean validate_nested,
@@ -725,10 +734,14 @@ not_found:
 }
 
 NMMetaSelectionResultList *
-nm_meta_selection_create_all (const NMMetaAbstractInfo *const* fields_array)
+nm_meta_selection_create_all (const NMMetaAbstractInfo *const*fields_array,
+                              NMMetaSelectionType selection_type)
 {
 	gs_unref_array GArray *array = NULL;
 	guint i;
+
+	nm_assert (NM_IN_SET (selection_type, NM_META_SELECTION_TYPE_COMMON,
+	                                      NM_META_SELECTION_TYPE_ALL));
 
 	if (fields_array) {
 		array = g_array_new (FALSE, FALSE, sizeof (OutputSelectionItem));
@@ -741,11 +754,11 @@ nm_meta_selection_create_all (const NMMetaAbstractInfo *const* fields_array)
 		}
 	}
 
-	return _output_selection_pack (fields_array, array, NULL);
+	return _output_selection_pack (fields_array, array, NULL, selection_type);
 }
 
 NMMetaSelectionResultList *
-nm_meta_selection_create_parse_one (const NMMetaAbstractInfo *const* fields_array,
+nm_meta_selection_create_parse_one (const NMMetaAbstractInfo *const*fields_array,
                                     const char *fields_prefix,
                                     const char *fields_str, /* one field selector (contains no commas) and is already stripped of spaces. */
                                     gboolean validate_nested,
@@ -765,12 +778,12 @@ nm_meta_selection_create_parse_one (const NMMetaAbstractInfo *const* fields_arra
 	                                   &str,
 	                                   error))
 		return NULL;
-	return _output_selection_pack (fields_array, array, str);
+	return _output_selection_pack (fields_array, array, str, NM_META_SELECTION_TYPE_SUB_FIELD);
 
 }
 
 NMMetaSelectionResultList *
-nm_meta_selection_create_parse_list (const NMMetaAbstractInfo *const* fields_array,
+nm_meta_selection_create_parse_list (const NMMetaAbstractInfo *const*fields_array,
                                      const char *fields_prefix,
                                      const char *fields_str, /* a comma separated list of selectors */
                                      gboolean validate_nested,
@@ -804,13 +817,13 @@ nm_meta_selection_create_parse_list (const NMMetaAbstractInfo *const* fields_arr
 	if (   fields_len == 0
 	    || (   fields_len == 1
 	        && !g_ascii_strcasecmp (fields_words[0], "all")))
-		return nm_meta_selection_create_all (fields_array);
+		return nm_meta_selection_create_all (fields_array, NM_META_SELECTION_TYPE_ALL);
 	else if (   fields_len == 1
 	         && !g_ascii_strcasecmp (fields_words[0], "common")) {
 		gs_free gpointer f = NULL;
 
 		fields_array = nm_meta_abstract_infos_select_included_in_common (fields_array, -1, NULL, &f);
-		return nm_meta_selection_create_all (fields_array);
+		return nm_meta_selection_create_all (fields_array, NM_META_SELECTION_TYPE_COMMON);
 	}
 
 	if (fields_prefix) {
@@ -832,5 +845,5 @@ nm_meta_selection_create_parse_list (const NMMetaAbstractInfo *const* fields_arr
 			return NULL;
 	}
 
-	return _output_selection_pack (fields_array, array, str);
+	return _output_selection_pack (fields_array, array, str, NM_META_SELECTION_TYPE_SUB_FIELD);
 }

@@ -71,10 +71,17 @@ char *nm_meta_abstract_infos_get_names_str (const NMMetaAbstractInfo *const*fiel
 
 /*****************************************************************************/
 
+typedef enum {
+	NM_META_SELECTION_TYPE_SUB_FIELD,
+	NM_META_SELECTION_TYPE_ALL,
+	NM_META_SELECTION_TYPE_COMMON,
+} NMMetaSelectionType;
+
 typedef struct {
 	const NMMetaAbstractInfo *info;
 	const char *self_selection;
 	const char *sub_selection;
+	NMMetaSelectionType selection_type;
 	guint idx;
 } NMMetaSelectionItem;
 
@@ -83,7 +90,8 @@ typedef struct {
 	const NMMetaSelectionItem items[];
 } NMMetaSelectionResultList;
 
-NMMetaSelectionResultList *nm_meta_selection_create_all (const NMMetaAbstractInfo *const* fields_array);
+NMMetaSelectionResultList *nm_meta_selection_create_all (const NMMetaAbstractInfo *const* fields_array,
+                                                         NMMetaSelectionType selection_type);
 NMMetaSelectionResultList *nm_meta_selection_create_parse_one (const NMMetaAbstractInfo *const* fields_array,
                                                                const char *fields_prefix,
                                                                const char *fields_str,
