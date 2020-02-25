@@ -84,6 +84,63 @@ nm_ip_addr_set_from_untrusted (int addr_family,
 
 /*****************************************************************************/
 
+gsize
+nm_utils_get_next_realloc_size (gboolean true_realloc, gsize requested)
+{
+	gsize n, x;
+
+	/* https://doc.qt.io/qt-5/containers.html#growth-strategies */
+
+	if (requested <= 40) {
+		/* small allocations. Increase in small steps of 8 bytes.
+		 *
+		 * We get thus sizes of 8, 16, 32, 40. */
+		if (requested <= 8)
+			return 8;
+		if (requested <= 16)
+			return 16;
+		if (requested <= 32)
+			return 32;
+		return 40;
+	}
+
+	if (   requested <= 0x2000 - 24
+	    || G_UNLIKELY (!true_realloc)) {
+		/* mid sized allocations. Return next power of two, minus 24 bytes extra space
+		 * at the beginning.
+		 * That means, we double the size as we grow.
+		 *
+		 * With !true_realloc, it means that the caller does not intend to call
+		 * realloc() but instead clone the buffer. This is for example the case, when we
+		 * want to nm_explicit_bzero() the old buffer. In that case we really want to grow
+		 * the buffer exponentially every time and not increment in page sizes of 4K (below).
+		 *
+		 * We get thus sizes of 104, 232, 488, 1000, 2024, 4072, 8168... */
+
+		if (G_UNLIKELY (requested > G_MAXSIZE / 2))
+			return G_MAXSIZE;
+
+		x = requested + 24;
+		n = 128;
+		while (n < x)
+			n <<= 1;
+
+		nm_assert (n > 24 && n - 24 >= requested);
+		return n - 24;
+	}
+
+	if (G_UNLIKELY (requested > G_MAXSIZE - 0x0FFF))
+		return G_MAXSIZE;
+
+	/* For large allocations (with !true_realloc) we allocate memory in chunks of
+	 * 4K (- 24 bytes extra), assuming that the memory gets mmapped and thus
+	 * realloc() is efficient by just reordering pages. */
+	n = (((requested) + 0x0FFF) & ~((gsize) 0x0FFF)) - 24;
+	return MAX (n, requested);
+}
+
+/*****************************************************************************/
+
 pid_t
 nm_utils_gettid (void)
 {
