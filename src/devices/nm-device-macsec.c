@@ -488,7 +488,7 @@ handle_auth_or_fail (NMDeviceMacsec *self,
 	NMConnection *applied_connection;
 
 	if (!nm_device_auth_retries_try_next (NM_DEVICE (self)))
-		return NM_ACT_STAGE_RETURN_FAILURE;
+		return FALSE;
 
 	nm_device_state_changed (NM_DEVICE (self), NM_DEVICE_STATE_NEED_AUTH, NM_DEVICE_STATE_REASON_NONE);
 
@@ -498,13 +498,13 @@ handle_auth_or_fail (NMDeviceMacsec *self,
 	setting_name = nm_connection_need_secrets (applied_connection, NULL);
 	if (!setting_name) {
 		_LOGI (LOGD_DEVICE, "Cleared secrets, but setting didn't need any secrets.");
-		return NM_ACT_STAGE_RETURN_FAILURE;
+		return FALSE;
 	}
 
 	macsec_secrets_get_secrets (self, setting_name,
 	                              NM_SECRET_AGENT_GET_SECRETS_FLAG_ALLOW_INTERACTION
 	                            | (new_secrets ? NM_SECRET_AGENT_GET_SECRETS_FLAG_REQUEST_NEW : 0));
-	return NM_ACT_STAGE_RETURN_POSTPONE;
+	return TRUE;
 }
 
 static gboolean
@@ -540,12 +540,13 @@ supplicant_connection_timeout_cb (gpointer user_data)
 	if (nm_settings_connection_get_timestamp (connection, &timestamp))
 		new_secrets = !timestamp;
 
-	if (handle_auth_or_fail (self, req, new_secrets) == NM_ACT_STAGE_RETURN_POSTPONE)
-		_LOGW (LOGD_DEVICE, "Activation: (macsec) asking for new secrets");
-	else
+	if (!handle_auth_or_fail (self, req, new_secrets)) {
 		nm_device_state_changed (device, NM_DEVICE_STATE_FAILED, NM_DEVICE_STATE_REASON_NO_SECRETS);
+		return G_SOURCE_REMOVE;
+	}
 
-	return FALSE;
+	_LOGW (LOGD_DEVICE, "Activation: (macsec) asking for new secrets");
+	return G_SOURCE_REMOVE;
 }
 
 static gboolean
@@ -590,7 +591,6 @@ act_stage2_config (NMDevice *device, NMDeviceStateReason *out_failure_reason)
 	NMDeviceMacsec *self = NM_DEVICE_MACSEC (device);
 	NMDeviceMacsecPrivate *priv = NM_DEVICE_MACSEC_GET_PRIVATE (self);
 	NMConnection *connection;
-	NMActStageReturn ret = NM_ACT_STAGE_RETURN_FAILURE;
 	const char *setting_name;
 
 	connection = nm_device_get_applied_connection (NM_DEVICE (self));
@@ -609,21 +609,22 @@ act_stage2_config (NMDevice *device, NMDeviceStateReason *out_failure_reason)
 		       "Activation: connection '%s' has security, but secrets are required.",
 		       nm_connection_get_id (connection));
 
-		ret = handle_auth_or_fail (self, req, FALSE);
-		if (ret != NM_ACT_STAGE_RETURN_POSTPONE)
+		if (!handle_auth_or_fail (self, req, FALSE)) {
 			NM_SET_OUT (out_failure_reason, NM_DEVICE_STATE_REASON_NO_SECRETS);
-	} else {
-		_LOGI (LOGD_DEVICE | LOGD_ETHER,
-		       "Activation: connection '%s' requires no security. No secrets needed.",
-		       nm_connection_get_id (connection));
+			return NM_ACT_STAGE_RETURN_FAILURE;
+		}
 
-		if (supplicant_interface_init (self))
-			ret = NM_ACT_STAGE_RETURN_POSTPONE;
-		else
-			NM_SET_OUT (out_failure_reason, NM_DEVICE_STATE_REASON_CONFIG_FAILED);
+		return NM_ACT_STAGE_RETURN_POSTPONE;
 	}
 
-	return ret;
+	_LOGI (LOGD_DEVICE | LOGD_ETHER,
+	       "Activation: connection '%s' requires no security. No secrets needed.",
+	       nm_connection_get_id (connection));
+	if (!supplicant_interface_init (self)) {
+		NM_SET_OUT (out_failure_reason, NM_DEVICE_STATE_REASON_CONFIG_FAILED);
+		return NM_ACT_STAGE_RETURN_FAILURE;
+	}
+	return NM_ACT_STAGE_RETURN_POSTPONE;
 }
 
 static void
