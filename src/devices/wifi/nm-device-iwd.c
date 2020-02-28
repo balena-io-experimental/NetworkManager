@@ -1852,7 +1852,7 @@ act_stage2_config (NMDevice *device, NMDeviceStateReason *out_failure_reason)
 		return NM_ACT_STAGE_RETURN_POSTPONE;
 	}
 
-	return NM_ACT_STAGE_RETURN_POSTPONE;
+	return NM_ACT_STAGE_RETURN_SUCCESS;
 
 out_fail:
 	cleanup_association_attempt (self, FALSE);
