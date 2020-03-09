@@ -375,7 +375,8 @@ typedef struct _NMDevicePrivate {
 	guint           carrier_wait_id;
 	gulong          config_changed_id;
 	guint32         mtu;
-	guint32         ip6_mtu;
+	guint32         ip6_mtu;           /* IPv6 MTU from RA */
+	guint32         ip6_mtu_desired;   /* Actual IPv6 MTU we want to apply */
 	guint32         mtu_initial;
 	guint32         ip6_mtu_initial;
 	NMDeviceMtuSource mtu_source;
@@ -9744,6 +9745,58 @@ _set_mtu (NMDevice *self, guint32 mtu)
 	}
 }
 
+static gboolean
+set_platform_mtu (NMDevice *self, guint32 mtu, gboolean *immediate)
+{
+	int r;
+
+	NM_SET_OUT (immediate, TRUE);
+
+	r = nm_platform_link_set_mtu (nm_device_get_platform (self),
+	                              nm_device_get_ip_ifindex (self),
+	                              mtu);
+	return (r != -NME_PL_CANT_SET_MTU);
+}
+
+gboolean
+nm_device_write_ipv6_mtu (NMDevice *self, gboolean force, gboolean anticipated_failure)
+{
+	NMDevicePrivate *priv = NM_DEVICE_GET_PRIVATE (self);
+	gboolean success = TRUE;
+	guint32 sys_mtu;
+	char sbuf[64];
+
+	if (priv->ip6_mtu_desired == 0)
+		return TRUE;
+
+	if (!force) {
+		sys_mtu = nm_device_sysctl_ip_conf_get_int_checked (self,
+		                                                    AF_INET6,
+		                                                    "mtu",
+		                                                    10,
+		                                                    0, G_MAXUINT32, 0);
+		if (priv->ip6_mtu_desired == sys_mtu)
+			return TRUE;
+	}
+
+	nm_sprintf_buf (sbuf, "%u", (unsigned) priv->ip6_mtu_desired);
+	if (!nm_device_sysctl_ip_conf_set (self, AF_INET6, "mtu", sbuf)) {
+		int errsv = errno;
+
+		_NMLOG ((anticipated_failure && errsv == EINVAL) ? LOGL_DEBUG : LOGL_WARN,
+		        LOGD_DEVICE,
+		        "mtu: failure to set IPv6 MTU%s",
+		        anticipated_failure && errsv == EINVAL
+		           ? ": Is the underlying MTU value successfully set?"
+		           : "");
+		success = FALSE;
+	}
+
+	priv->carrier_wait_until_ms = nm_utils_get_monotonic_timestamp_msec () + CARRIER_WAIT_TIME_AFTER_MTU_MS;
+
+	return success;
+}
+
 static void
 _commit_mtu (NMDevice *self, const NMIP4Config *config)
 {
@@ -9757,7 +9810,7 @@ _commit_mtu (NMDevice *self, const NMIP4Config *config)
 		guint32 value;
 	} ip6_mtu_sysctl = { 0, };
 	int ifindex;
-	char sbuf[64], sbuf1[64], sbuf2[64];
+	char sbuf1[64], sbuf2[64];
 	gboolean success = TRUE;
 
 	ifindex = nm_device_get_ip_ifindex (self);
@@ -9875,6 +9928,7 @@ _commit_mtu (NMDevice *self, const NMIP4Config *config)
 				ip6_mtu = mtu_desired;
 		}
 	}
+	priv->ip6_mtu_desired = ip6_mtu;
 
 	_LOGT (LOGD_DEVICE, "mtu: device-mtu: %u%s, ipv6-mtu: %u%s, ifindex: %d",
 	       (guint) mtu_desired,
@@ -9891,9 +9945,11 @@ _commit_mtu (NMDevice *self, const NMIP4Config *config)
 		} \
 		ip6_mtu_sysctl.value; \
 	})
+
 	if (   (mtu_desired && mtu_desired != mtu_plat)
 	    || (ip6_mtu && ip6_mtu != _IP6_MTU_SYS ())) {
 		gboolean anticipated_failure = FALSE;
+		gboolean immediate = TRUE;
 
 		if (!priv->mtu_initial && !priv->ip6_mtu_initial) {
 			/* before touching any of the MTU parameters, record the
@@ -9903,10 +9959,7 @@ _commit_mtu (NMDevice *self, const NMIP4Config *config)
 		}
 
 		if (mtu_desired && mtu_desired != mtu_plat) {
-			int r;
-
-			r = nm_platform_link_set_mtu (nm_device_get_platform (self), ifindex, mtu_desired);
-			if (r == -NME_PL_CANT_SET_MTU) {
+			if (!NM_DEVICE_GET_CLASS (self)->set_platform_mtu (self, mtu_desired, &immediate)) {
 				anticipated_failure = TRUE;
 				success = FALSE;
 				_LOGW (LOGD_DEVICE, "mtu: failure to set MTU. %s",
@@ -9919,21 +9972,11 @@ _commit_mtu (NMDevice *self, const NMIP4Config *config)
 			priv->carrier_wait_until_ms = nm_utils_get_monotonic_timestamp_msec () + CARRIER_WAIT_TIME_AFTER_MTU_MS;
 		}
 
-		if (ip6_mtu && ip6_mtu != _IP6_MTU_SYS ()) {
-			if (!nm_device_sysctl_ip_conf_set (self, AF_INET6, "mtu",
-			                                   nm_sprintf_buf (sbuf, "%u", (unsigned) ip6_mtu))) {
-				int errsv = errno;
-
-				_NMLOG (anticipated_failure && errsv == EINVAL ? LOGL_DEBUG : LOGL_WARN,
-				        LOGD_DEVICE,
-				        "mtu: failure to set IPv6 MTU%s",
-				        anticipated_failure && errsv == EINVAL
-				           ? ": Is the underlying MTU value successfully set?"
-				           : "");
-				success = FALSE;
-			}
-			priv->carrier_wait_until_ms = nm_utils_get_monotonic_timestamp_msec () + CARRIER_WAIT_TIME_AFTER_MTU_MS;
-		}
+		if (   immediate
+		    && priv->ip6_mtu_desired
+		    && priv->ip6_mtu_desired != _IP6_MTU_SYS ()
+		    && !nm_device_write_ipv6_mtu (self, TRUE, anticipated_failure))
+			success = FALSE;
 	}
 
 	if (success && source != NM_DEVICE_MTU_SOURCE_NONE)
@@ -17695,6 +17738,7 @@ nm_device_class_init (NMDeviceClass *klass)
 	klass->parent_changed_notify = parent_changed_notify;
 	klass->can_reapply_change = can_reapply_change;
 	klass->reapply_connection = reapply_connection;
+	klass->set_platform_mtu = set_platform_mtu;
 
 	obj_properties[PROP_UDI] =
 	    g_param_spec_string (NM_DEVICE_UDI, "", "",
