@@ -21,6 +21,8 @@ _LOG_DECLARE_SELF(NMDeviceOvsInterface);
 
 typedef struct {
 	bool waiting_for_interface:1;
+	guint32 pending_mtu;
+	gulong mtu_changed_id;
 } NMDeviceOvsInterfacePrivate;
 
 struct _NMDeviceOvsInterface {
@@ -155,6 +157,77 @@ deactivate (NMDevice *device)
 	NMDeviceOvsInterfacePrivate *priv = NM_DEVICE_OVS_INTERFACE_GET_PRIVATE (self);
 
 	priv->waiting_for_interface = FALSE;
+	nm_clear_g_signal_handler (self, &priv->mtu_changed_id);
+}
+
+static void
+set_platform_mtu_cb (GError *error, gpointer user_data)
+{
+	NMDevice *device = user_data;
+	NMDeviceOvsInterface *self = NM_DEVICE_OVS_INTERFACE (device);
+
+	if (   error
+	    && !g_error_matches (error, NM_UTILS_ERROR, NM_UTILS_ERROR_CANCELLED_DISPOSING)) {
+		_LOGW (LOGD_DEVICE, "could not change mtu of '%s': %s",
+		       nm_device_get_iface (device), error->message);
+	}
+
+	g_object_unref (device);
+}
+
+static void
+mtu_changed_cb (NMDevice *device,
+                GParamSpec *pspec,
+                gpointer user_data)
+{
+	NMDeviceOvsInterface *self = NM_DEVICE_OVS_INTERFACE (device);
+	NMDeviceOvsInterfacePrivate *priv = NM_DEVICE_OVS_INTERFACE_GET_PRIVATE (self);
+	guint mtu;
+
+	g_object_get (device, NM_DEVICE_MTU, &mtu, NULL);
+
+	if (mtu != 0 && mtu == priv->pending_mtu) {
+		_LOGT (LOGD_DEVICE, "mtu is now set, changing IPv6 MTU");
+
+		nm_clear_g_signal_handler (self, &priv->mtu_changed_id);
+		priv->pending_mtu = 0;
+
+		nm_device_write_ipv6_mtu (device, FALSE, FALSE);
+	}
+}
+
+static gboolean
+set_platform_mtu (NMDevice *device, guint32 mtu, gboolean *immediate)
+{
+	NMDeviceOvsInterface *self = NM_DEVICE_OVS_INTERFACE (device);
+	NMDeviceOvsInterfacePrivate *priv = NM_DEVICE_OVS_INTERFACE_GET_PRIVATE (self);
+
+	nm_assert (mtu != 0);
+
+	NM_SET_OUT (immediate, TRUE);
+
+	if (!_is_internal_interface (device))
+		return TRUE;
+
+	if (mtu == priv->pending_mtu)
+		return TRUE;
+
+	NM_SET_OUT (immediate, FALSE);
+
+	nm_ovsdb_set_interface_mtu (nm_ovsdb_get (),
+	                            nm_device_get_ip_iface (device),
+	                            mtu, set_platform_mtu_cb,
+	                            g_object_ref (device));
+	priv->pending_mtu = mtu;
+
+	if (!priv->mtu_changed_id) {
+		priv->mtu_changed_id = g_signal_connect (device,
+		                                         "notify::" NM_DEVICE_MTU,
+		                                         G_CALLBACK (mtu_changed_cb),
+		                                         NULL);
+	}
+
+	return TRUE;
 }
 
 typedef struct {
@@ -351,4 +424,6 @@ nm_device_ovs_interface_class_init (NMDeviceOvsInterfaceClass *klass)
 	device_class->link_changed = link_changed;
 	device_class->act_stage3_ip_config_start = act_stage3_ip_config_start;
 	device_class->can_unmanaged_external_down = can_unmanaged_external_down;
+	device_class->set_platform_mtu = set_platform_mtu;
+	device_class->get_configured_mtu = nm_device_get_configured_mtu_for_wired;
 }
