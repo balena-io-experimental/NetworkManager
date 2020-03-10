@@ -13,6 +13,7 @@
 
 #include "nm-secret-agent-simple.h"
 #include "nm-client-utils.h"
+#include "nm-meta-setting-access.h"
 
 #include "polkit-agent.h"
 #include "utils.h"
@@ -611,41 +612,202 @@ const NmcMetaGenericInfo *const metagen_device_detail_wimax_properties[] = {
 
 /*****************************************************************************/
 
-const NmcMetaGenericInfo *const nmc_fields_dev_wifi_list[] = {
-	NMC_META_GENERIC ("NAME"),        /* 0 */
-	NMC_META_GENERIC ("SSID"),        /* 1 */
-	NMC_META_GENERIC ("SSID-HEX"),    /* 2 */
-	NMC_META_GENERIC ("BSSID"),       /* 3 */
-	NMC_META_GENERIC ("MODE"),        /* 4 */
-	NMC_META_GENERIC ("CHAN"),        /* 5 */
-	NMC_META_GENERIC ("FREQ"),        /* 6 */
-	NMC_META_GENERIC ("RATE"),        /* 7 */
-	NMC_META_GENERIC ("SIGNAL"),      /* 8 */
-	NMC_META_GENERIC ("BARS"),        /* 9 */
-	NMC_META_GENERIC ("SECURITY"),    /* 10 */
-	NMC_META_GENERIC ("WPA-FLAGS"),   /* 11 */
-	NMC_META_GENERIC ("RSN-FLAGS"),   /* 12 */
-	NMC_META_GENERIC ("DEVICE"),      /* 13 */
-	NMC_META_GENERIC ("ACTIVE"),      /* 14 */
-	NMC_META_GENERIC ("IN-USE"),      /* 15 */
-	NMC_META_GENERIC ("DBUS-PATH"),   /* 16 */
-	NULL,
-};
-#define NMC_FIELDS_DEV_WIFI_LIST_COMMON        "IN-USE,BSSID,SSID,MODE,CHAN,RATE,SIGNAL,BARS,SECURITY"
-#define NMC_FIELDS_DEV_WIFI_LIST_FOR_DEV_LIST  "NAME,"NMC_FIELDS_DEV_WIFI_LIST_COMMON
+typedef struct {
+	const char *device_name;
+	NMAccessPoint *active_ap;
+} MetagenDeviceDetailApTableData;
 
-const NmcMetaGenericInfo *const nmc_fields_dev_wimax_list[] = {
-	NMC_META_GENERIC ("NAME"),        /* 0 */
-	NMC_META_GENERIC ("NSP"),         /* 1 */
-	NMC_META_GENERIC ("SIGNAL"),      /* 2 */
-	NMC_META_GENERIC ("TYPE"),        /* 3 */
-	NMC_META_GENERIC ("DEVICE"),      /* 4 */
-	NMC_META_GENERIC ("ACTIVE"),      /* 5 */
-	NMC_META_GENERIC ("DBUS-PATH"),   /* 6 */
+typedef struct {
+	NMAccessPoint *ap;
+	guint index;
+} MetagenDeviceDetailApRowData;
+
+static const MetagenDeviceDetailApRowData **
+_aps_to_row_data (NMAccessPoint *const*aps, guint len)
+{
+	gpointer r;
+	const MetagenDeviceDetailApRowData **r_p;
+	MetagenDeviceDetailApRowData *r_v;
+	guint i;
+
+	if (len == 0)
+		return g_new0 (const MetagenDeviceDetailApRowData *, 1);
+
+	G_STATIC_ASSERT_EXPR (_nm_alignof (gpointer) == _nm_alignof (MetagenDeviceDetailApRowData));
+	r = g_malloc0 (sizeof (gpointer) * (len + 1) + (sizeof (MetagenDeviceDetailApRowData) * len));
+	r_p = r;
+	r_v = (MetagenDeviceDetailApRowData *) &(((char *) r)[sizeof (gpointer) * (len + 1)]);
+
+	for (i = 0; i < len; i++) {
+		nm_assert (NM_IS_ACCESS_POINT (aps[i]));
+		r_v[i].ap = aps[i];
+		r_v[i].index = i;
+		r_p[i] = &r_v[i];
+	}
+	nm_assert (len == NM_PTRARRAY_LEN (r_p));
+	return r_p;
+}
+
+static gconstpointer
+_metagen_device_detail_ap_get_fcn (NMC_META_GENERIC_INFO_GET_FCN_ARGS)
+{
+	const MetagenDeviceDetailApTableData *table_data = target_data;
+	const MetagenDeviceDetailApRowData *row_data = target;
+	NMAccessPoint *ap = row_data->ap;
+	GBytes *ssid;
+	const guint8 *ssid_data;
+	gsize ssid_len;
+	NM80211Mode mode;
+	guint32 freq, bitrate;
+	guint8 strength;
+	NM80211ApFlags flags;
+	NM80211ApSecurityFlags wpa_flags, rsn_flags;
+	GString *str;
+
+	if (get_type == NM_META_ACCESSOR_GET_TYPE_COLOR) {
+		NMMetaColor color;
+
+		strength = MIN (nm_access_point_get_strength (ap), 100);
+		color = wifi_signal_to_color (strength);
+		if (   info->info_type == NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_IN_USE
+		    && ap == table_data->active_ap)
+			color = NM_META_COLOR_CONNECTION_ACTIVATED;
+		return GINT_TO_POINTER (color);
+	}
+
+	switch (info->info_type) {
+	case NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_SSID:
+		ssid = nm_access_point_get_ssid (ap);
+		if (!ssid)
+			return NULL;
+		ssid_data = g_bytes_get_data (ssid, &ssid_len);
+		return (*out_to_free = nm_utils_ssid_to_utf8 (ssid_data, ssid_len));
+	case NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_SSID_HEX:
+		ssid = nm_access_point_get_ssid (ap);
+		if (!ssid)
+			return NULL;
+		ssid_data = g_bytes_get_data (ssid, &ssid_len);
+		return (*out_to_free = ssid_to_hex ((const char *) ssid_data, ssid_len));
+	case NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_BSSID:
+		return nm_access_point_get_bssid (ap);
+	case NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_MODE:
+		mode = nm_access_point_get_mode (ap);
+		return nmc_meta_generic_get_str_i18n (  mode == NM_802_11_MODE_INFRA ? N_("Infra")
+		                                      : mode == NM_802_11_MODE_ADHOC ? N_("Ad-Hoc")
+		                                      : mode == NM_802_11_MODE_MESH  ? N_("Mesh")
+		                                      :                                N_("N/A"),
+		                                      get_type);
+	case NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_CHAN:
+		freq = nm_access_point_get_frequency (ap);
+		return (*out_to_free = g_strdup_printf ("%u", (guint) nm_utils_wifi_freq_to_channel (freq)));
+	case NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_FREQ:
+		freq = nm_access_point_get_frequency (ap);
+		if (get_type == NM_META_ACCESSOR_GET_TYPE_PRETTY)
+			return (*out_to_free = g_strdup_printf (_("%u MHz"), (guint) freq));
+		return (*out_to_free = g_strdup_printf ("%u MHz", (guint) freq));
+	case NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_RATE:
+		bitrate = nm_access_point_get_max_bitrate (ap);
+		if (get_type == NM_META_ACCESSOR_GET_TYPE_PRETTY)
+			return (*out_to_free = g_strdup_printf (_("%u Mbit/s"), (guint) (bitrate / 1000)));
+		return (*out_to_free = g_strdup_printf ("%u Mbit/s", (guint) (bitrate / 1000)));
+	case NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_SIGNAL:
+		strength = MIN (nm_access_point_get_strength (ap), 100);
+		return (*out_to_free = g_strdup_printf ("%u", strength));
+	case NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_BARS:
+		strength = MIN (nm_access_point_get_strength (ap), 100);
+		return nmc_wifi_strength_bars (strength);
+	case NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_SECURITY:
+		flags = nm_access_point_get_flags (ap);
+		wpa_flags = nm_access_point_get_wpa_flags (ap);
+		rsn_flags = nm_access_point_get_rsn_flags (ap);
+		str = g_string_new ("");
+		if (   (flags & NM_802_11_AP_FLAGS_PRIVACY)
+		    && wpa_flags == NM_802_11_AP_SEC_NONE
+		    && rsn_flags == NM_802_11_AP_SEC_NONE) {
+			g_string_append (nm_gstring_add_space_delimiter (str),
+			                 "WEP");
+		}
+		if (wpa_flags != NM_802_11_AP_SEC_NONE) {
+			g_string_append (nm_gstring_add_space_delimiter (str),
+			                 "WPA1");
+		}
+		if (   (rsn_flags & NM_802_11_AP_SEC_KEY_MGMT_PSK)
+		    || (rsn_flags & NM_802_11_AP_SEC_KEY_MGMT_802_1X)) {
+			g_string_append (nm_gstring_add_space_delimiter (str),
+			                 "WPA2");
+		}
+		if (rsn_flags & NM_802_11_AP_SEC_KEY_MGMT_SAE) {
+			g_string_append (nm_gstring_add_space_delimiter (str),
+			                 "WPA3");
+		}
+		if (rsn_flags & NM_802_11_AP_SEC_KEY_MGMT_OWE) {
+			g_string_append (nm_gstring_add_space_delimiter (str),
+			                 "OWE");
+		}
+		if (   (wpa_flags & NM_802_11_AP_SEC_KEY_MGMT_802_1X)
+		    || (rsn_flags & NM_802_11_AP_SEC_KEY_MGMT_802_1X)) {
+			g_string_append (nm_gstring_add_space_delimiter (str),
+			                 "802.1X");
+		}
+		return (*out_to_free = g_string_free (str, FALSE));
+	case NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_WPA_FLAGS:
+		wpa_flags = nm_access_point_get_wpa_flags (ap);
+		return (*out_to_free = ap_wpa_rsn_flags_to_string (wpa_flags, get_type));
+	case NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_RSN_FLAGS:
+		rsn_flags = nm_access_point_get_rsn_flags (ap);
+		return (*out_to_free = ap_wpa_rsn_flags_to_string (rsn_flags, get_type));
+	case NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_DEVICE:
+		return table_data->device_name;
+	case NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_ACTIVE:
+		return nmc_meta_generic_get_bool (ap == table_data->active_ap,
+		                                  get_type);
+	case NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_IN_USE:
+		return   ap == table_data->active_ap
+		       ? "*"
+		       : " ";
+	case NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_DBUS_PATH:
+		return nm_object_get_path (NM_OBJECT (ap));
+	default:
+		break;
+	}
+
+	g_return_val_if_reached (NULL);
+}
+
+const NmcMetaGenericInfo *const metagen_device_detail_ap[_NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_NUM + 1] = {
+#define _METAGEN_DEVICE_DETAIL_AP(type, name, ...) \
+	[type] = NMC_META_GENERIC(name, .info_type = type, .get_fcn = _metagen_device_detail_ap_get_fcn, ##__VA_ARGS__)
+	_METAGEN_DEVICE_DETAIL_AP (NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_SSID,      "SSID",      .common_priority =  3),
+	_METAGEN_DEVICE_DETAIL_AP (NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_SSID_HEX,  "SSID-HEX",  .common_priority = -1),
+	_METAGEN_DEVICE_DETAIL_AP (NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_BSSID,     "BSSID",     .common_priority =  2),
+	_METAGEN_DEVICE_DETAIL_AP (NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_MODE,      "MODE",      .common_priority =  4),
+	_METAGEN_DEVICE_DETAIL_AP (NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_CHAN,      "CHAN",      .common_priority =  5),
+	_METAGEN_DEVICE_DETAIL_AP (NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_FREQ,      "FREQ",      .common_priority = -1),
+	_METAGEN_DEVICE_DETAIL_AP (NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_RATE,      "RATE",      .common_priority =  6),
+	_METAGEN_DEVICE_DETAIL_AP (NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_SIGNAL,    "SIGNAL",    .common_priority =  7),
+	_METAGEN_DEVICE_DETAIL_AP (NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_BARS,      "BARS",      .common_priority =  8),
+	_METAGEN_DEVICE_DETAIL_AP (NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_SECURITY,  "SECURITY",  .common_priority =  9),
+	_METAGEN_DEVICE_DETAIL_AP (NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_WPA_FLAGS, "WPA-FLAGS", .common_priority = -1),
+	_METAGEN_DEVICE_DETAIL_AP (NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_RSN_FLAGS, "RSN-FLAGS", .common_priority = -1),
+	_METAGEN_DEVICE_DETAIL_AP (NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_DEVICE,    "DEVICE",    .common_priority = -1),
+	_METAGEN_DEVICE_DETAIL_AP (NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_ACTIVE,    "ACTIVE",    .common_priority = -1),
+	_METAGEN_DEVICE_DETAIL_AP (NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_IN_USE,    "IN-USE",    .common_priority =  1),
+	_METAGEN_DEVICE_DETAIL_AP (NMC_GENERIC_INFO_TYPE_DEVICE_DETAIL_AP_DBUS_PATH, "DBUS-PATH", .common_priority = -1),
+};
+
+/*****************************************************************************/
+
+const NmcMetaGenericInfo *const metagen_device_detail_nsp[] = {
+	NMC_META_GENERIC ("NSP"),
+	NMC_META_GENERIC ("SIGNAL"),
+	NMC_META_GENERIC ("TYPE"),
+	NMC_META_GENERIC ("DEVICE"),
+	NMC_META_GENERIC ("ACTIVE"),
+	NMC_META_GENERIC ("DBUS-PATH"),
 	NULL,
 };
-#define NMC_FIELDS_DEV_WIMAX_LIST_COMMON        "NSP,SIGNAL,TYPE,DEVICE,ACTIVE"
-#define NMC_FIELDS_DEV_WIMAX_LIST_FOR_DEV_LIST  "NAME,"NMC_FIELDS_DEV_WIMAX_LIST_COMMON
+
+/*****************************************************************************/
 
 const NmcMetaGenericInfo *const nmc_fields_dev_show_master_prop[] = {
 	NMC_META_GENERIC ("NAME"),     /* 0 */
@@ -683,10 +845,10 @@ const NmcMetaGenericInfo *const nmc_fields_dev_show_sections[] = {
 	NMC_META_GENERIC_WITH_NESTED ("CAPABILITIES",      metagen_device_detail_capabilities),     /* 1 */
 	NMC_META_GENERIC_WITH_NESTED ("INTERFACE-FLAGS",   metagen_device_detail_interface_flags),  /* 2 */
 	NMC_META_GENERIC_WITH_NESTED ("WIFI-PROPERTIES",   metagen_device_detail_wifi_properties),  /* 3 */
-	NMC_META_GENERIC_WITH_NESTED ("AP",                nmc_fields_dev_wifi_list + 1),           /* 4 */
+	NMC_META_GENERIC_WITH_NESTED ("AP",                metagen_device_detail_ap),               /* 4 */
 	NMC_META_GENERIC_WITH_NESTED ("WIRED-PROPERTIES",  metagen_device_detail_wired_properties), /* 5 */
 	NMC_META_GENERIC_WITH_NESTED ("WIMAX-PROPERTIES",  metagen_device_detail_wimax_properties), /* 6 */
-	NMC_META_GENERIC_WITH_NESTED ("NSP",               nmc_fields_dev_wimax_list + 1),          /* 7 */
+	NMC_META_GENERIC_WITH_NESTED ("NSP",               metagen_device_detail_nsp),              /* 7 */
 	NMC_META_GENERIC_WITH_NESTED ("IP4",               metagen_ip4_config),                     /* 8 */
 	NMC_META_GENERIC_WITH_NESTED ("DHCP4",             metagen_dhcp_config),                    /* 9 */
 	NMC_META_GENERIC_WITH_NESTED ("IP6",               metagen_ip6_config),                     /* 10 */
@@ -1137,125 +1299,6 @@ typedef struct {
 	GPtrArray *output_data;
 } APInfo;
 
-static void
-fill_output_access_point (gpointer data, gpointer user_data)
-{
-	NMAccessPoint *ap = NM_ACCESS_POINT (data);
-	APInfo *info = (APInfo *) user_data;
-	NmcOutputField *arr;
-	gboolean active = FALSE;
-	NM80211ApFlags flags;
-	NM80211ApSecurityFlags wpa_flags, rsn_flags;
-	guint32 freq, bitrate;
-	guint8 strength;
-	GBytes *ssid;
-	const char *bssid;
-	NM80211Mode mode;
-	char *channel_str, *freq_str, *ssid_str = NULL, *ssid_hex_str = NULL,
-	     *bitrate_str, *strength_str, *wpa_flags_str, *rsn_flags_str;
-	GString *security_str;
-	char *ap_name;
-	const char *sig_bars;
-	NMMetaColor color;
-
-	if (info->active_bssid) {
-		const char *current_bssid = nm_access_point_get_bssid (ap);
-		if (current_bssid && !strcmp (current_bssid, info->active_bssid))
-			active = TRUE;
-	}
-
-	/* Get AP properties */
-	flags = nm_access_point_get_flags (ap);
-	wpa_flags = nm_access_point_get_wpa_flags (ap);
-	rsn_flags = nm_access_point_get_rsn_flags (ap);
-	ssid = nm_access_point_get_ssid (ap);
-	bssid = nm_access_point_get_bssid (ap);
-	freq = nm_access_point_get_frequency (ap);
-	mode = nm_access_point_get_mode (ap);
-	bitrate = nm_access_point_get_max_bitrate (ap);
-	strength = MIN (nm_access_point_get_strength (ap), 100);
-
-	/* Convert to strings */
-	if (ssid) {
-		const guint8 *ssid_data;
-		gsize ssid_len;
-
-		ssid_data = g_bytes_get_data (ssid, &ssid_len);
-		ssid_str = nm_utils_ssid_to_utf8 (ssid_data, ssid_len);
-		ssid_hex_str = ssid_to_hex ((const char *) ssid_data, ssid_len);
-	}
-	channel_str = g_strdup_printf ("%u", nm_utils_wifi_freq_to_channel (freq));
-	freq_str = g_strdup_printf (_("%u MHz"), freq);
-	bitrate_str = g_strdup_printf (_("%u Mbit/s"), bitrate/1000);
-	strength_str = g_strdup_printf ("%u", strength);
-	wpa_flags_str = ap_wpa_rsn_flags_to_string (wpa_flags, NM_META_ACCESSOR_GET_TYPE_PRETTY);
-	rsn_flags_str = ap_wpa_rsn_flags_to_string (rsn_flags, NM_META_ACCESSOR_GET_TYPE_PRETTY);
-	sig_bars = nmc_wifi_strength_bars (strength);
-
-	security_str = g_string_new (NULL);
-
-	if (   (flags & NM_802_11_AP_FLAGS_PRIVACY)
-	    && (wpa_flags == NM_802_11_AP_SEC_NONE)
-	    && (rsn_flags == NM_802_11_AP_SEC_NONE)) {
-		g_string_append (security_str, "WEP ");
-	}
-	if (wpa_flags != NM_802_11_AP_SEC_NONE) {
-		g_string_append (security_str, "WPA1 ");
-	}
-	if (   (rsn_flags & NM_802_11_AP_SEC_KEY_MGMT_PSK)
-	    || (rsn_flags & NM_802_11_AP_SEC_KEY_MGMT_802_1X)) {
-		g_string_append (security_str, "WPA2 ");
-	}
-	if (rsn_flags & NM_802_11_AP_SEC_KEY_MGMT_SAE) {
-		g_string_append (security_str, "WPA3 ");
-	}
-	if (rsn_flags & NM_802_11_AP_SEC_KEY_MGMT_OWE) {
-		g_string_append (security_str, "OWE ");
-	}
-	if (   (wpa_flags & NM_802_11_AP_SEC_KEY_MGMT_802_1X)
-	    || (rsn_flags & NM_802_11_AP_SEC_KEY_MGMT_802_1X)) {
-		g_string_append   (security_str, "802.1X ");
-	}
-
-	if (security_str->len > 0)
-		g_string_truncate (security_str, security_str->len-1);  /* Chop off last space */
-
-	arr = nmc_dup_fields_array ((const NMMetaAbstractInfo *const*) nmc_fields_dev_wifi_list,
-	                            info->output_flags);
-
-	ap_name = g_strdup_printf ("AP[%d]", info->index++); /* AP */
-	set_val_str  (arr, 0, ap_name);
-	set_val_str  (arr, 1, ssid_str);
-	set_val_str  (arr, 2, ssid_hex_str);
-	set_val_strc (arr, 3, bssid);
-	set_val_strc (arr, 4, mode == NM_802_11_MODE_ADHOC ? _("Ad-Hoc")
-	                    : mode == NM_802_11_MODE_INFRA ? _("Infra")
-	                    : mode == NM_802_11_MODE_MESH ? _("Mesh")
-	                    : _("N/A"));
-	set_val_str  (arr, 5, channel_str);
-	set_val_str  (arr, 6, freq_str);
-	set_val_str  (arr, 7, bitrate_str);
-	set_val_str  (arr, 8, strength_str);
-	set_val_strc (arr, 9, sig_bars);
-	set_val_str  (arr, 10, security_str->str);
-	set_val_str  (arr, 11, wpa_flags_str);
-	set_val_str  (arr, 12, rsn_flags_str);
-	set_val_strc (arr, 13, info->device);
-	set_val_strc (arr, 14, active ? _("yes") : _("no"));
-	set_val_strc (arr, 15, active ? "*" : " ");
-	set_val_strc (arr, 16, nm_object_get_path (NM_OBJECT (ap)));
-
-	/* Set colors */
-	color = wifi_signal_to_color (strength);
-	set_val_color_all (arr, color);
-	if (active)
-		arr[15].color = NM_META_COLOR_CONNECTION_ACTIVATED;
-
-	g_ptr_array_add (info->output_data, arr);
-
-	g_string_free (security_str, FALSE);
-}
-
 static char *
 bluetooth_caps_to_string (NMBluetoothCapabilities caps)
 {
@@ -1417,7 +1460,6 @@ static gboolean
 show_device_info (NMDevice *device, NmCli *nmc)
 {
 	GError *error = NULL;
-	NMDeviceState state = NM_DEVICE_STATE_UNKNOWN;
 	GArray *sections_array;
 	int k;
 	const char *fields_str = NULL;
@@ -1478,8 +1520,6 @@ show_device_info (NMDevice *device, NmCli *nmc)
 
 		was_output = FALSE;
 
-		state = nm_device_get_state (device);
-
 		if (nmc_fields_dev_show_sections[section_idx]->nested == metagen_device_detail_general) {
 			nmc_print (&nmc->nmc_config,
 			           (gpointer[]) { device, NULL },
@@ -1534,44 +1574,34 @@ show_device_info (NMDevice *device, NmCli *nmc)
 			continue;
 		}
 
-		/* Wireless specific information */
-		if ((NM_IS_DEVICE_WIFI (device))) {
-			NMAccessPoint *active_ap = NULL;
-			const char *active_bssid = NULL;
+		if (nmc_fields_dev_show_sections[section_idx]->nested == metagen_device_detail_ap) {
+			if (NM_IS_DEVICE_WIFI (device)) {
+				gs_unref_ptrarray GPtrArray *aps = NULL;
 
-			/* section AP */
-			if (!g_ascii_strcasecmp (nmc_fields_dev_show_sections[section_idx]->name, nmc_fields_dev_show_sections[4]->name)) {
-				NMC_OUTPUT_DATA_DEFINE_SCOPED (out);
-
-				if (state == NM_DEVICE_STATE_ACTIVATED) {
-					active_ap = nm_device_wifi_get_active_access_point (NM_DEVICE_WIFI (device));
-					active_bssid = active_ap ? nm_access_point_get_bssid (active_ap) : NULL;
-				}
-
-				tmpl = (const NMMetaAbstractInfo *const*) nmc_fields_dev_wifi_list;
-				out_indices = parse_output_fields (section_fld ?: NMC_FIELDS_DEV_WIFI_LIST_FOR_DEV_LIST,
-				                                   tmpl, FALSE, NULL, NULL);
-				arr = nmc_dup_fields_array (tmpl, NMC_OF_FLAG_FIELD_NAMES);
-				g_ptr_array_add (out.output_data, arr);
-
-				{
-					gs_unref_ptrarray GPtrArray *aps = NULL;
-					APInfo info = {
-						.nmc = nmc,
-						.index = 1,
-						.output_flags = NMC_OF_FLAG_SECTION_PREFIX,
-						.active_bssid = active_bssid,
-						.device = nm_device_get_iface (device),
-						.output_data = out.output_data,
+				aps = sort_access_points (nm_device_wifi_get_access_points (NM_DEVICE_WIFI (device)));
+				if (aps->len > 0) {
+					const MetagenDeviceDetailApTableData table_data = {
+						.device_name = nm_device_get_iface (device),
+						.active_ap =   (nm_device_get_state (device) == NM_DEVICE_STATE_ACTIVATED)
+						             ? nm_device_wifi_get_active_access_point (NM_DEVICE_WIFI (device))
+						             : NULL,
 					};
+					gs_free const MetagenDeviceDetailApRowData **aps_row = NULL;
 
-					aps = sort_access_points (nm_device_wifi_get_access_points (NM_DEVICE_WIFI (device)));
-					g_ptr_array_foreach (aps, fill_output_access_point, &info);
+					aps_row = _aps_to_row_data ((NMAccessPoint **) aps->pdata, aps->len);
+					nmc_print (&nmc->nmc_config,
+					           (gpointer *) aps_row,
+					           (gpointer) &table_data,
+					           NULL,
+					           NMC_META_GENERIC_GROUP ("AP",
+					                                   metagen_device_detail_ap,
+					                                   N_("NAME"),
+					                                   .with_indexed_header = TRUE),
+					           "AP",
+					           section_fld ?: "common",
+					           NULL);
+					was_output = TRUE;
 				}
-
-				print_data_prepare_width (out.output_data);
-				print_data (&nmc->nmc_config, out_indices, NULL, 0, &out);
-				was_output = TRUE;
 			}
 		}
 
@@ -2774,112 +2804,69 @@ find_ap_on_device (NMDevice *device, const char *bssid, const char *ssid, gboole
 }
 
 static void
-show_access_point_info (NMDeviceWifi *wifi, NmCli *nmc, NmcOutputData *out)
-{
-	NMAccessPoint *active_ap = NULL;
-	const char *active_bssid = NULL;
-	NmcOutputField *arr;
-
-	if (nm_device_get_state (NM_DEVICE (wifi)) == NM_DEVICE_STATE_ACTIVATED) {
-		active_ap = nm_device_wifi_get_active_access_point (wifi);
-		active_bssid = active_ap ? nm_access_point_get_bssid (active_ap) : NULL;
-	}
-
-	arr = nmc_dup_fields_array ((const NMMetaAbstractInfo *const*) nmc_fields_dev_wifi_list,
-	                            NMC_OF_FLAG_MAIN_HEADER_ADD | NMC_OF_FLAG_FIELD_NAMES);
-	g_ptr_array_add (out->output_data, arr);
-
-	{
-		gs_unref_ptrarray GPtrArray *aps = NULL;
-		APInfo info = {
-			.nmc = nmc,
-			.index = 1,
-			.output_flags = 0,
-			.active_bssid = active_bssid,
-			.device = nm_device_get_iface (NM_DEVICE (wifi)),
-			.output_data = out->output_data,
-		};
-
-		aps = sort_access_points (nm_device_wifi_get_access_points (wifi));
-		g_ptr_array_foreach (aps, fill_output_access_point, &info);
-	}
-
-	print_data_prepare_width (out->output_data);
-}
-
-static void
-wifi_print_aps (NMDeviceWifi *wifi,
+wifi_print_aps (NMDeviceWifi *device,
                 NmCli *nmc,
-                GArray *_out_indices,
-                const NMMetaAbstractInfo *const*tmpl,
                 const char *bssid_user)
 {
-	NMAccessPoint *ap = NULL;
 	const GPtrArray *aps;
-	APInfo *info;
+	gs_unref_ptrarray GPtrArray *aps_sorted = NULL;
+	gs_unref_ptrarray GPtrArray *aps_selected = NULL;
 	guint i;
-	NmcOutputField *arr;
-	const char *base_hdr = _("Wi-Fi scan list");
-	NMC_OUTPUT_DATA_DEFINE_SCOPED (out);
-	gs_free char *header_name = NULL;
-	static gboolean empty_line = FALSE;
 
-	if (empty_line)
-		g_print ("\n"); /* Empty line between devices' APs */
-
-	/* Main header name */
-	header_name = construct_header_name (base_hdr, nm_device_get_iface (NM_DEVICE (wifi)));
-
-	out_indices = g_array_ref (_out_indices);
-
+	aps_sorted = sort_access_points (nm_device_wifi_get_access_points (device));
 	if (bssid_user) {
-		/* Specific AP requested - list only that */
-		aps = nm_device_wifi_get_access_points (wifi);
-		for (i = 0; i < aps->len; i++) {
-			char *bssid_up;
-			NMAccessPoint *candidate_ap = g_ptr_array_index (aps, i);
+		for (i = 0; i < aps_sorted->len; i++) {
+			NMAccessPoint *candidate_ap = aps_sorted->pdata[i];
 			const char *candidate_bssid = nm_access_point_get_bssid (candidate_ap);
 
-			bssid_up = g_ascii_strup (bssid_user, -1);
-			if (!strcmp (bssid_up, candidate_bssid))
-				ap = candidate_ap;
-			g_free (bssid_up);
+			if (!candidate_bssid)
+				continue;
+			if (!nm_utils_hwaddr_matches (bssid_user, -1, candidate_bssid, -1))
+				continue;
+			if (!aps_selected)
+				aps_selected = g_ptr_array_new_with_free_func (nm_g_object_unref);
+			g_ptr_array_add (aps_selected, g_object_ref (candidate_ap));
 		}
-		if (ap) {
-			/* Add headers (field names) */
-			arr = nmc_dup_fields_array (tmpl, NMC_OF_FLAG_MAIN_HEADER_ADD | NMC_OF_FLAG_FIELD_NAMES);
-			g_ptr_array_add (out.output_data, arr);
+		if (!aps_selected)
+			return;
+		aps = aps_selected;
+	} else
+		aps = aps_sorted;
 
-			info = g_malloc0 (sizeof (APInfo));
-			info->nmc = nmc;
-			info->index = 1;
-			info->output_flags = 0;
-			info->active_bssid = NULL;
-			info->device = nm_device_get_iface (NM_DEVICE (wifi));
-			info->output_data = out.output_data;
+	if (aps->len > 0) {
+		const char *iface = nm_device_get_iface (NM_DEVICE (device));
+		gs_free const MetagenDeviceDetailApRowData **aps_row = NULL;
+		gs_free char *header_name = NULL;
+		const MetagenDeviceDetailApTableData table_data = {
+			.device_name = iface,
+			.active_ap =   (nm_device_get_state (NM_DEVICE (device)) == NM_DEVICE_STATE_ACTIVATED)
+			             ? nm_device_wifi_get_active_access_point (device)
+			             : NULL,
+		};
 
-			fill_output_access_point (ap, info);
+		header_name = construct_header_name (_("Wi-Fi scan list"), iface);
 
-			print_data_prepare_width (out.output_data);
-			print_data (&nmc->nmc_config, out_indices, header_name, 0, &out);
-			g_free (info);
+		aps_row = _aps_to_row_data ((NMAccessPoint **) aps->pdata, aps->len);
 
-			nmc->return_value = NMC_RESULT_SUCCESS;
-			empty_line = TRUE;
-		}
-	} else {
-		show_access_point_info (wifi, nmc, &out);
-		print_data (&nmc->nmc_config, out_indices, header_name, 0, &out);
-		empty_line = TRUE;
+		nmc_print (&nmc->nmc_config,
+		           (gpointer *) aps_row,
+		           (gpointer *) &table_data,
+		           header_name,
+		           NMC_META_GENERIC_GROUP ("AP",
+		                                   metagen_device_detail_ap,
+		                                   N_("NAME"),
+		                                   .with_indexed_header = TRUE,
+		                                   .common_priority = -1),
+		           "AP",
+		           nmc->required_fields,
+		           NULL);
 	}
 }
 
 typedef struct {
 	NmCli *nmc;
 	NMDevice **devices;
-	const NMMetaAbstractInfo *const *tmpl;
 	const char *bssid_user;
-	GArray *out_indices;
 } ScanInfo;
 
 typedef struct {
@@ -2901,8 +2888,6 @@ wifi_list_finish (WifiListData *data)
 		for (i = 0; info->devices[i]; i++) {
 			wifi_print_aps (NM_DEVICE_WIFI (info->devices[i]),
 			                info->nmc,
-			                info->out_indices,
-			                info->tmpl,
 			                info->bssid_user);
 		}
 		if (nmc->return_value == NMC_RESULT_ERROR_NOT_FOUND) {
@@ -2921,7 +2906,6 @@ wifi_list_finish (WifiListData *data)
 		for (i = 0; info->devices[i]; i++)
 			g_object_unref (info->devices[i]);
 		g_free (info->devices);
-		g_array_unref (info->out_indices);
 		nm_g_slice_free (info);
 	}
 }
@@ -2996,9 +2980,7 @@ do_device_wifi_list (NmCli *nmc, int argc, char **argv)
 	const char *bssid_user = NULL;
 	const char *rescan = NULL;
 	gs_free NMDevice **devices = NULL;
-	const char *fields_str = NULL;
-	const NMMetaAbstractInfo *const*tmpl;
-	gs_unref_array GArray *out_indices = NULL;
+	gs_free NMMetaSelectionResultList *selection = NULL;
 	int option;
 	guint64 rescan_cutoff;
 	NMDeviceWifi *wifi;
@@ -3057,15 +3039,11 @@ do_device_wifi_list (NmCli *nmc, int argc, char **argv)
 	if (nmc->complete)
 		return nmc->return_value;
 
-	if (!nmc->required_fields || g_ascii_strcasecmp (nmc->required_fields, "common") == 0)
-		fields_str = NMC_FIELDS_DEV_WIFI_LIST_COMMON;
-	else if (!nmc->required_fields || g_ascii_strcasecmp (nmc->required_fields, "all") == 0) {
-	} else
-		fields_str = nmc->required_fields;
-
-	tmpl = (const NMMetaAbstractInfo *const*) nmc_fields_dev_wifi_list;
-	out_indices = parse_output_fields (fields_str, tmpl, FALSE, NULL, &error);
-
+	selection = nm_meta_selection_create_parse_list ((const NMMetaAbstractInfo *const*) metagen_device_detail_ap,
+	                                                 NULL,
+	                                                 nmc->required_fields,
+	                                                 FALSE,
+	                                                 &error);
 	if (error) {
 		g_string_printf (nmc->return_text, _("Error: 'device wifi': %s"), error->message);
 		g_error_free (error);
@@ -3150,10 +3128,8 @@ do_device_wifi_list (NmCli *nmc, int argc, char **argv)
 		if (!scan_info) {
 			scan_info = g_slice_new (ScanInfo);
 			*scan_info = (ScanInfo) {
-				.out_indices = g_array_ref (out_indices),
-				.tmpl        = tmpl,
-				.bssid_user  = bssid_user,
-				.nmc         = nmc,
+				.bssid_user = bssid_user,
+				.nmc        = nmc,
 			};
 		}
 
@@ -3182,8 +3158,8 @@ do_device_wifi_list (NmCli *nmc, int argc, char **argv)
 		/* Print results right away if no scan is pending */
 		for (i = 0; devices[i]; i++) {
 			wifi_print_aps (NM_DEVICE_WIFI (devices[i]),
-			                nmc, out_indices,
-			                tmpl, bssid_user);
+			                nmc,
+			                bssid_user);
 			g_object_unref (devices[i]);
 		}
 	}
