@@ -2950,11 +2950,17 @@ nm_platform_wifi_get_rate (NMPlatform *self, int ifindex)
 NM80211Mode
 nm_platform_wifi_get_mode (NMPlatform *self, int ifindex)
 {
+	NM80211Mode mode;
+
 	_CHECK_SELF (self, klass, NM_802_11_MODE_UNKNOWN);
 
 	g_return_val_if_fail (ifindex > 0, NM_802_11_MODE_UNKNOWN);
 
-	return klass->wifi_get_mode (self, ifindex);
+	mode = klass->wifi_get_mode (self, ifindex);
+
+	_LOGI ("[MAJORZ] nm_platform_wifi_get_mode %d", mode);
+
+	return mode;
 }
 
 void
@@ -2963,6 +2969,8 @@ nm_platform_wifi_set_mode (NMPlatform *self, int ifindex, NM80211Mode mode)
 	_CHECK_SELF_VOID (self, klass);
 
 	g_return_if_fail (ifindex > 0);
+
+	_LOGI ("[MAJORZ] nm_platform_wifi_set_mode %d", mode);
 
 	klass->wifi_set_mode (self, ifindex, mode);
 }

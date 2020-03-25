@@ -3297,6 +3297,8 @@ nm_device_wifi_init (NMDeviceWifi *self)
 
 	c_list_init (&priv->aps_lst_head);
 
+	_LOGI (LOGD_PLATFORM | LOGD_WIFI, "[MAJORZ] nm_device_wifi_init");
+
 	priv->hidden_probe_scan_warn = TRUE;
 	priv->mode = NM_802_11_MODE_INFRA;
 	priv->wowlan_restore = NM_SETTING_WIRELESS_WAKE_ON_WLAN_IGNORE;
