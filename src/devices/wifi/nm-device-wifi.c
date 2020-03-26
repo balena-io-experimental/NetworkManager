@@ -594,6 +594,8 @@ deactivate (NMDevice *device)
 	int ifindex = nm_device_get_ifindex (device);
 	NM80211Mode old_mode = priv->mode;
 
+	_LOGW (LOGD_DEVICE | LOGD_WIFI, "[MAJORZ] nm-device-wifi::deactivate");
+
 	nm_clear_g_source (&priv->periodic_source_id);
 
 	cleanup_association_attempt (self, TRUE);
@@ -607,6 +609,11 @@ deactivate (NMDevice *device)
 
 	/* Clear any critical protocol notification in the Wi-Fi stack */
 	nm_platform_wifi_indicate_addressing_running (nm_device_get_platform (device), ifindex, FALSE);
+
+	if (priv->initial_mode == NM_802_11_MODE_AP) {
+		_LOGW (LOGD_DEVICE | LOGD_WIFI, "[MAJORZ] nm-device-wifi::deactivate device AP return");
+		return;
+	}
 
 	/* Ensure we're in infrastructure mode after deactivation; some devices
 	 * (usually older ones) don't scan well in adhoc mode.
