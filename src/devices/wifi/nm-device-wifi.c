@@ -2668,22 +2668,28 @@ act_stage1_prepare (NMDevice *device, NMDeviceStateReason *out_failure_reason)
 	/* expire the temporary MAC address used during scanning */
 	priv->hw_addr_scan_expire = 0;
 
+	_LOGW (LOGD_DEVICE | LOGD_WIFI, "[MAJORZ] nm-device-wifi::act_stage1_prepare set spoof MAC");
+
 	/* Set spoof MAC to the interface */
 	if (!nm_device_hw_addr_set_cloned (device, connection, TRUE)) {
 		*out_failure_reason = NM_DEVICE_STATE_REASON_CONFIG_FAILED;
+		_LOGW (LOGD_DEVICE | LOGD_WIFI, "[MAJORZ] nm-device-wifi::act_stage1_prepare set spoof MAC failed");
 		return NM_ACT_STAGE_RETURN_FAILURE;
 	}
 
 	/* AP and Mesh modes never use a specific object or existing scanned AP */
 	if (!NM_IN_SET (priv->mode, NM_802_11_MODE_AP,
 	                            NM_802_11_MODE_MESH)) {
+		_LOGW (LOGD_DEVICE | LOGD_WIFI, "[MAJORZ] nm-device-wifi::act_stage1_prepare nm_active_connection_get_specific_object");
 		ap_path = nm_active_connection_get_specific_object (NM_ACTIVE_CONNECTION (req));
 		ap =   ap_path
 		     ? nm_wifi_ap_lookup_for_device (NM_DEVICE (self), ap_path)
 		     : NULL;
 	}
-	if (!ap)
+	if (!ap) {
+		_LOGW (LOGD_DEVICE | LOGD_WIFI, "[MAJORZ] nm-device-wifi::act_stage1_prepare nm_wifi_aps_find_first_compatible");
 		ap = nm_wifi_aps_find_first_compatible (&priv->aps_lst_head, connection);
+	}
 
 	if (!ap) {
 		/* If the user is trying to connect to an AP that NM doesn't yet know about
@@ -2692,6 +2698,7 @@ act_stage1_prepare (NMDevice *device, NMDeviceStateReason *out_failure_reason)
 		 * AP gets used until the real one is found in the scan list (Ad-Hoc or Hidden),
 		 * or until the device is deactivated (Hotspot).
 		 */
+		_LOGW (LOGD_DEVICE | LOGD_WIFI, "[MAJORZ] nm-device-wifi::act_stage1_prepare nm_wifi_ap_new_fake_from_connection");
 		ap_fake = nm_wifi_ap_new_fake_from_connection (connection);
 		if (!ap_fake)
 			g_return_val_if_reached (NM_ACT_STAGE_RETURN_FAILURE);
@@ -2705,6 +2712,7 @@ act_stage1_prepare (NMDevice *device, NMDeviceStateReason *out_failure_reason)
 		ap = ap_fake;
 	}
 
+	_LOGW (LOGD_DEVICE | LOGD_WIFI, "[MAJORZ] nm-device-wifi::act_stage1_prepare set_current_ap");
 	set_current_ap (self, ap, FALSE);
 	nm_active_connection_set_specific_object (NM_ACTIVE_CONNECTION (req),
 	                                          nm_dbus_object_get_path (NM_DBUS_OBJECT (ap)));
