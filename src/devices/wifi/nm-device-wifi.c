@@ -243,6 +243,8 @@ supplicant_interface_acquire (NMDeviceWifi *self)
 {
 	NMDeviceWifiPrivate *priv = NM_DEVICE_WIFI_GET_PRIVATE (self);
 
+	_LOGW (LOGD_DEVICE | LOGD_WIFI, "[MAJORZ] nm-device-wifi::supplicant_interface_acquire");
+
 	g_return_val_if_fail (self != NULL, FALSE);
 	g_return_val_if_fail (!priv->sup_iface, TRUE);
 
@@ -1364,6 +1366,11 @@ request_wireless_scan (NMDeviceWifi *self,
 
 	if (!force_if_scanning && priv->requested_scan) {
 		/* There's already a scan in progress */
+		return;
+	}
+
+	if (priv->initial_mode == NM_802_11_MODE_AP) {
+		/* Ignore scanning on devices with AP initial mode */
 		return;
 	}
 
@@ -2631,6 +2638,8 @@ act_stage1_prepare (NMDevice *device, NMDeviceStateReason *out_failure_reason)
 	const char *mode;
 	const char *ap_path;
 
+	_LOGW (LOGD_DEVICE | LOGD_WIFI, "[MAJORZ] nm-device-wifi::act_stage1_prepare");
+
 	req = nm_device_get_act_request (NM_DEVICE (self));
 	g_return_val_if_fail (req, NM_ACT_STAGE_RETURN_FAILURE);
 
@@ -2776,6 +2785,8 @@ act_stage2_config (NMDevice *device, NMDeviceStateReason *out_failure_reason)
 	NMSettingWireless *s_wireless;
 	GError *error = NULL;
 	guint timeout;
+
+	_LOGW (LOGD_DEVICE | LOGD_WIFI, "[MAJORZ] nm-device-wifi::act_stage2_config");
 
 	nm_clear_g_source (&priv->sup_timeout_id);
 	nm_clear_g_source (&priv->link_timeout_id);
@@ -2952,6 +2963,8 @@ act_stage4_ip_config_timeout (NMDevice *device,
 	NMSettingIPConfig *s_ip;
 	gboolean may_fail;
 
+	_LOGW (LOGD_DEVICE | LOGD_WIFI, "[MAJORZ] nm-device-wifi::act_stage4_ip_config_timeout");
+
 	connection = nm_device_get_applied_connection (device);
 	s_ip = nm_connection_get_setting_ip_config (connection, addr_family);
 	may_fail = nm_setting_ip_config_get_may_fail (s_ip);
@@ -3078,9 +3091,11 @@ device_state_changed (NMDevice *device,
 
 	switch (new_state) {
 	case NM_DEVICE_STATE_UNMANAGED:
+		_LOGW (LOGD_DEVICE | LOGD_WIFI, "[MAJORZ] NM_DEVICE_STATE_UNMANAGED");
 		clear_aps = TRUE;
 		break;
 	case NM_DEVICE_STATE_UNAVAILABLE:
+		_LOGW (LOGD_DEVICE | LOGD_WIFI, "[MAJORZ] NM_DEVICE_STATE_UNAVAILABLE");
 		/* If the device is enabled and the supplicant manager is ready,
 		 * acquire a supplicant interface and transition to DISCONNECTED because
 		 * the device is now ready to use.
@@ -3092,21 +3107,26 @@ device_state_changed (NMDevice *device,
 		clear_aps = TRUE;
 		break;
 	case NM_DEVICE_STATE_NEED_AUTH:
+		_LOGW (LOGD_DEVICE | LOGD_WIFI, "[MAJORZ] NM_DEVICE_STATE_NEED_AUTH");
 		if (priv->sup_iface)
 			nm_supplicant_interface_disconnect (priv->sup_iface);
 		break;
 	case NM_DEVICE_STATE_IP_CHECK:
+		_LOGW (LOGD_DEVICE | LOGD_WIFI, "[MAJORZ] NM_DEVICE_STATE_IP_CHECK");
 		/* Clear any critical protocol notification in the wifi stack */
 		nm_platform_wifi_indicate_addressing_running (nm_device_get_platform (device), nm_device_get_ifindex (device), FALSE);
 		break;
 	case NM_DEVICE_STATE_ACTIVATED:
+		_LOGW (LOGD_DEVICE | LOGD_WIFI, "[MAJORZ] NM_DEVICE_STATE_ACTIVATED");
 		activation_success_handler (device);
 		break;
 	case NM_DEVICE_STATE_FAILED:
+		_LOGW (LOGD_DEVICE | LOGD_WIFI, "[MAJORZ] NM_DEVICE_STATE_FAILED");
 		/* Clear any critical protocol notification in the wifi stack */
 		nm_platform_wifi_indicate_addressing_running (nm_device_get_platform (device), nm_device_get_ifindex (device), FALSE);
 		break;
 	case NM_DEVICE_STATE_DISCONNECTED:
+		_LOGW (LOGD_DEVICE | LOGD_WIFI, "[MAJORZ] NM_DEVICE_STATE_DISCONNECTED");
 		/* Kick off a scan to get latest results */
 		priv->scan_interval = SCAN_INTERVAL_MIN;
 		request_wireless_scan (self, FALSE, FALSE, NULL);
