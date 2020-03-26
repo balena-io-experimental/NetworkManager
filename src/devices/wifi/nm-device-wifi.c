@@ -3328,7 +3328,6 @@ nm_device_wifi_init (NMDeviceWifi *self)
 	c_list_init (&priv->aps_lst_head);
 
 	priv->hidden_probe_scan_warn = TRUE;
-	priv->mode = NM_802_11_MODE_INFRA;
 	priv->wowlan_restore = NM_SETTING_WIRELESS_WAKE_ON_WLAN_IGNORE;
 }
 
@@ -3350,6 +3349,7 @@ constructed (GObject *object)
 
 	priv->initial_mode = nm_platform_wifi_get_mode (nm_device_get_platform (NM_DEVICE (self)),
 	                                                nm_device_get_ifindex (NM_DEVICE (self)));
+	priv->mode = priv->initial_mode;
 	_LOGW (LOGD_PLATFORM | LOGD_WIFI, "[MAJORZ] nm-device-wifi::constructed initial mode: %d", priv->initial_mode);
 }
 
