@@ -2958,7 +2958,7 @@ nm_platform_wifi_get_mode (NMPlatform *self, int ifindex)
 
 	mode = klass->wifi_get_mode (self, ifindex);
 
-	_LOGI ("[MAJORZ] nm_platform_wifi_get_mode %d", mode);
+	_LOGW ("[MAJORZ] nm_platform_wifi_get_mode %d", mode);
 
 	return mode;
 }
@@ -2970,7 +2970,7 @@ nm_platform_wifi_set_mode (NMPlatform *self, int ifindex, NM80211Mode mode)
 
 	g_return_if_fail (ifindex > 0);
 
-	_LOGI ("[MAJORZ] nm_platform_wifi_set_mode %d", mode);
+	_LOGW ("[MAJORZ] nm_platform_wifi_set_mode %d", mode);
 
 	klass->wifi_set_mode (self, ifindex, mode);
 }

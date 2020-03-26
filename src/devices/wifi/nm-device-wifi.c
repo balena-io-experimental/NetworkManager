@@ -94,6 +94,7 @@ typedef struct {
 	guint                  sup_timeout_id; /* supplicant association timeout */
 
 	NM80211Mode       mode;
+	NM80211Mode       initial_mode;
 
 	NMActRequestGetSecretsCallId *wifi_secrets_id;
 
@@ -3295,9 +3296,9 @@ nm_device_wifi_init (NMDeviceWifi *self)
 {
 	NMDeviceWifiPrivate *priv = NM_DEVICE_WIFI_GET_PRIVATE (self);
 
-	c_list_init (&priv->aps_lst_head);
+	_LOGW (LOGD_DEVICE | LOGD_WIFI, "[MAJORZ] nm_device_wifi_init");
 
-	_LOGI (LOGD_PLATFORM | LOGD_WIFI, "[MAJORZ] nm_device_wifi_init");
+	c_list_init (&priv->aps_lst_head);
 
 	priv->hidden_probe_scan_warn = TRUE;
 	priv->mode = NM_802_11_MODE_INFRA;
@@ -3310,6 +3311,8 @@ constructed (GObject *object)
 	NMDeviceWifi *self = NM_DEVICE_WIFI (object);
 	NMDeviceWifiPrivate *priv = NM_DEVICE_WIFI_GET_PRIVATE (self);
 
+	_LOGW (LOGD_PLATFORM | LOGD_WIFI, "[MAJORZ] nm-device-wifi::constructed");
+
 	G_OBJECT_CLASS (nm_device_wifi_parent_class)->constructed (object);
 
 	if (priv->capabilities & NM_WIFI_DEVICE_CAP_AP)
@@ -3317,6 +3320,10 @@ constructed (GObject *object)
 
 	/* Connect to the supplicant manager */
 	priv->sup_mgr = g_object_ref (nm_supplicant_manager_get ());
+
+	priv->initial_mode = nm_platform_wifi_get_mode (nm_device_get_platform (NM_DEVICE (self)),
+	                                                nm_device_get_ifindex (NM_DEVICE (self)));
+	_LOGW (LOGD_PLATFORM | LOGD_WIFI, "[MAJORZ] nm-device-wifi::constructed initial mode: %d", priv->initial_mode);
 }
 
 NMDevice *
@@ -3337,6 +3344,8 @@ dispose (GObject *object)
 {
 	NMDeviceWifi *self = NM_DEVICE_WIFI (object);
 	NMDeviceWifiPrivate *priv = NM_DEVICE_WIFI_GET_PRIVATE (self);
+
+	_LOGW (LOGD_DEVICE | LOGD_WIFI, "[MAJORZ] nm-device-wifi::dispose");
 
 	nm_clear_g_source (&priv->periodic_source_id);
 
@@ -3364,6 +3373,8 @@ finalize (GObject *object)
 {
 	NMDeviceWifi *self = NM_DEVICE_WIFI (object);
 	NMDeviceWifiPrivate *priv = NM_DEVICE_WIFI_GET_PRIVATE (self);
+
+	_LOGW (LOGD_DEVICE | LOGD_WIFI, "[MAJORZ] nm-device-wifi::finalize");
 
 	nm_assert (c_list_is_empty (&priv->aps_lst_head));
 
