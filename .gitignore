@@ -349,3 +349,5 @@ test-*.trs
 /src/tests/test-general
 /src/tests/test-general-with-expect
 /src/tests/test-resolvconf-capture
+
+/.vscode/
